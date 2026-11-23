@@ -190,7 +190,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
     <h3>这一版改了什么</h3>
     <ul class="plain">
       <li><b>第三版：七件待定的事都已定下，写进了各项的改法里。</b>没有性能声明就不做性能验收；逐个模型列速度的表格不算声明；上限 20 个计时基准；“每个叶子都测”留成显式选项；带路径的输出检查判“未验证”、不改摘要算法；环境按“配方的产物不见了”重新准备；测试设计被打断后只复用会话结果。全部决定列在<a href="#open">已经定下的</a>。</li>
-      <li><b>第三版：看了 <code>fix-parallel-main</code> 上另外两个没进 main 的提交。</b>一个（基线不可用时当场说）并入 <a href="#c22">2.2</a>；另一个（由主作业的 agent 决定导入是否等草稿作业的修复）值得带回，但建议以后单独做。见<a href="#unmerged">那一节</a>。</li>
+      <li><b>第三版：看了 <code>fix-parallel-main</code> 上另外两个没进 main 的提交，结论也已定下。</b>一个（基线不可用时当场说）带回，并入 <a href="#c22">2.2</a>；另一个（由主作业的 agent 决定导入是否等草稿作业的修复）不带回。见<a href="#unmerged">那一节</a>。</li>
       <li>以下是第二版相对第一版的改动。</li>
       <li><b>用完整的轨迹更新了数字。</b>上一版依据的轨迹只到第一次性能测量之后。运行实际在 20.2 小时结束，性能测量一共做了三次；第三次整份重测，只是因为第二次的 582 条标准里有 1 条噪声太大没有判定。</li>
       <li><b>性能验收的范围改成“只测项目自己声明的性能”。</b>这是你定的方向：README 和文档里报告过的性能，加上仓库自带的基准脚本（由 agent 自动找，不假设固定路径）；有 GPU 就用 1 块 GPU 测，测不了的不测、在报告里说明。它成了<a href="#pkg1">包一</a>，是整个方案里收益最大的一项。</li>
@@ -224,7 +224,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
     <li><b>冻结阶段有一段一直存在的串行。</b>设计出的测试文件的试跑和最后合跑，在 8 核的节点上只用 1 核。上一次这两段是 20 分钟，不显眼；这次清单大了，是 94 分钟（<a href="#p5">问题 5</a>）。</li>
     <li><b>候选环境没有重新准备的修复已经写过，但不在 main 里。</b>它在 <code>fix-parallel-main</code> 分支上，是 PR #45 合并之后才加的提交，PR #56 把 #45 带回来时没有带上它（<a href="#p6">问题 6</a>）。</li>
     <li><b>方案分五个包，13 项。</b>包一缩小性能范围，包二让重来不再发生，包三处理冻结和验证里的串行与空转，包四是测试设计流程的三项改进，包五是一个小项。见<a href="#plan">修改方案</a>；先后和验证办法见<a href="#order">顺序和验证</a>。</li>
-    <li><b>各项决定都已定下</b>，共 11 条，见<a href="#open">已经定下的</a>。剩下两点是我看过另外两个提交之后的建议，等你确认。</li>
+    <li><b>各项决定都已定下</b>，共 12 条，见<a href="#open">已经定下的</a>。方案里没有待定的事了。</li>
   </ul>
 </section>
 
@@ -876,7 +876,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 
   <div class="pkg" id="unmerged">
     <h3><code>fix-parallel-main</code> 上另外两个没进 main 的提交</h3>
-    <p>这个分支在 PR #45 合并之后又加了三个提交，PR #56 把 #45 带回 main 时都没有带上。第一个是 <a href="#c32">3.2</a> 要带回的修复。另外两个我读了提交的内容，并逐个文件试了它们在最新 main 上能不能直接应用。</p>
+    <p>这个分支在 PR #45 合并之后又加了三个提交，PR #56 把 #45 带回 main 时都没有带上。第一个是 <a href="#c32">3.2</a> 要带回的修复。另外两个我读了提交的内容，并逐个文件试了它们在最新 main 上能不能直接应用。结论已经定下：甲带回，乙不带回。</p>
     <div class="panel">
       <div class="item" id="u1">
         <div class="n">甲</div>
@@ -899,7 +899,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
       <div class="item" id="u2">
         <div class="n">乙</div>
         <div class="body">
-          <div class="head"><h3><code>b19c77a1</code>：由主作业的 agent 决定导入是否等草稿作业的修复</h3><span class="pill warn">值得带回，以后单独做</span></div>
+          <div class="head"><h3><code>b19c77a1</code>：由主作业的 agent 决定导入是否等草稿作业的修复</h3><span class="pill warn">不带回</span></div>
           <dl>
             <dt>它解决什么</dt>
             <dd>并行模式下，主作业封存时如果草稿作业正在做一次修复，由主作业的 agent 决定是等它修完，还是停掉草稿作业、直接拿它上一个候选。现在一律等。它的说明里记着同一次早先的运行：主作业封存时草稿作业的修复刚开始 2 分钟，等了 24.7 分钟。</dd>
@@ -910,7 +910,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
             <dt>能否直接应用</dt>
             <dd>8 个文件，增 459 行减 26 行。源码的四处（<code>pair.py</code>、<code>advice.py</code>、<code>controller.py</code>、提示）在最新 main 上都不能直接应用，要重新移植。</dd>
             <dt>结论</dt>
-            <dd>值得带回，但不放进这三个合并请求。方案做完之后冻结阶段会短到两小时左右，和草稿作业写完第一版的时间（这次 110 分钟）接近，这种等待会重新出现。建议在改完后的 detectron2 重跑里量一下主作业封存后等了草稿作业的修复多久，超过几分钟就单独移植。</dd>
+            <dd>不带回。它不在这个方案里。</dd>
           </dl>
         </div>
       </div>
@@ -1035,14 +1035,13 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
     <li><b>并行前后去留一致。</b>3.1：1 个 worker 和 8 个 worker 接受、拒绝的设计文件集合要相同。</li>
     <li><b>detectron2 core 重跑。</b>用这次运行的同一份功能图和清单（不让主持会话重做阶段 01），在改完的分支上跑一次，和上面的推算逐段对照。清单固定之后，差别才能归到代码上。</li>
   </ol>
-  <p>提交 <code>b19c77a1</code>（由主作业的 agent 决定导入是否等草稿作业的修复）不在这三个合并请求里。在最后的 detectron2 重跑里顺便量一下主作业封存后等了草稿作业的修复多久，再决定要不要单独移植，见<a href="#unmerged">那一节</a>。</p>
   <p>要同步更新的文字：<code>docs/graph-rewrite.md</code> 里性能基准的一节（范围、GPU、“不计 GPU 的时间”那一段）和计算节点的一节，<code>docs/job-tools.md</code>（新的查找工具、<code>prepare_environment</code> 的自动调用），两个技能文档（<code>performance=</code> 的含义、阶段 01 里整理性能声明、选分区时找 GPU 分区、暂停后怎么办），设计者和 controller 的提示。提示文字改了之后要重新生成 <code>docs/prompts.md</code> 和 <code>tests/prompt_views.json</code>。</p>
 </section>
 
 
 <section id="open">
   <h2>已经定下的</h2>
-  <p>下面 11 条都是你定的，已经写进各项的改法里。</p>
+  <p>下面 12 条都是你定的，已经写进各项的改法里。方案里没有待定的事了。</p>
   <div class="panel scroll">
     <table>
       <thead><tr><th></th><th>决定</th><th>写在哪</th></tr></thead>
@@ -1056,16 +1055,12 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
         <tr><td class="id">7</td><td>一个作业最多 20 个计时基准，设置里可改</td><td><a href="#c12">1.2</a></td></tr>
         <tr><td class="id">8</td><td>现在的“每个叶子都测”留成一个要显式打开的选项，默认不用</td><td><a href="#c12">1.2</a></td></tr>
         <tr><td class="id">9</td><td>输出随路径变化的检查：基线报问题、发事件，对比时判“未验证”；不改摘要的算法</td><td><a href="#c22">2.2</a></td></tr>
-        <tr><td class="id">10</td><td>重新准备环境按原提交的做法触发：配方的产物不在了才重跑。<code>fix-parallel-main</code> 上另外两个没进 main 的提交也一起看</td><td><a href="#c32">3.2</a>、<a href="#unmerged">另外两个提交</a></td></tr>
+        <tr><td class="id">10</td><td>重新准备环境按原提交的做法触发：配方的产物不在了才重跑</td><td><a href="#c32">3.2</a></td></tr>
         <tr><td class="id">11</td><td>测试设计被打断后只复用会话结果，试跑结果不复用</td><td><a href="#c23">2.3</a></td></tr>
+        <tr><td class="id">12</td><td><code>fix-parallel-main</code> 上另外两个没进 main 的提交：<code>c20cfa67</code>（封存之前的基线不可用时当场发事件）带回，并入 2.2；<code>b19c77a1</code>（由主作业的 agent 决定导入是否等草稿作业的修复）不带回</td><td><a href="#c22">2.2</a>、<a href="#unmerged">另外两个提交</a></td></tr>
       </tbody>
     </table>
   </div>
-  <h3>看过另外两个提交之后的建议，等你确认</h3>
-  <ul class="plain">
-    <li><b><code>c20cfa67</code>（封存之前的基线不可用时当场说）：带回，并入 2.2。</b>它很小，问题在最新 main 上还在，和 2.2 正好配套。我另外建议让它的事件点名问题的种类，不只给一个数。</li>
-    <li><b><code>b19c77a1</code>（由主作业的 agent 决定导入是否等草稿作业的修复）：值得带回，但以后单独做。</b>它有 459 行，在最新 main 上要重新移植；这次运行里没有它要解决的等待。方案做完之后这种等待会重新出现，所以建议先在改完后的重跑里量一下，再决定。</li>
-  </ul>
 </section>
 
 

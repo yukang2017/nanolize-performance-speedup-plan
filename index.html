@@ -1,0 +1,916 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>性能验收提速方案</title>
+<meta name="description" content="nanolize 开了性能验收之后在 detectron2 core 上从不到 3 小时变成 18 小时以上：结合这次运行的轨迹和最新 main 的代码，整理时间花在哪、问题出在哪，以及逐项的修改方案和预期效果。">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@500;600&family=JetBrains+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600&display=swap">
+<style>
+/* Layout: one reading column. Verdict and four figures first, then the table of all items, then the fix plan in five packages (one block per defect: seen, checked, change, test), then what is no bug, the order of work, limits and the probe log. */
+:root {
+  --bg: #f4f6f9; --card: #fcfcfb; --ink: #14171c; --ink-2: #474e5c; --ink-3: #6b7281;
+  --line: #dde1e8; --accent: #2a78d6; --accent-soft: #dfeafa;
+  --good-ink: #0b6b0b; --warn-ink: #7a5200; --crit-ink: #a52727;
+  --good-bg: #e4f5e4; --warn-bg: #fdf1d3; --crit-bg: #fbe3e3;
+  --font-body: Inter, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --font-head: "Space Grotesk", Inter, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111315; --card: #1a1a19; --ink: #eceef1; --ink-2: #c0c5ce; --ink-3: #959cab;
+    --line: #2f333a; --accent: #5a9cec; --accent-soft: #162c47;
+    --good-ink: #7fd67f; --warn-ink: #f3c458; --crit-ink: #f08d8d;
+    --good-bg: #12301a; --warn-bg: #3a2d0c; --crit-bg: #3b1a1a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111315; --card: #1a1a19; --ink: #eceef1; --ink-2: #c0c5ce; --ink-3: #959cab;
+  --line: #2f333a; --accent: #5a9cec; --accent-soft: #162c47;
+  --good-ink: #7fd67f; --warn-ink: #f3c458; --crit-ink: #f08d8d;
+  --good-bg: #12301a; --warn-bg: #3a2d0c; --crit-bg: #3b1a1a;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.7; }
+.page { max-width: 1000px; margin: 0 auto; padding-block: 36px 72px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; flex-direction: column; gap: 44px; }
+header { display: flex; flex-direction: column; gap: 12px; }
+.eyebrow { font-family: var(--font-mono); font-size: 12px; letter-spacing: .04em; color: var(--ink-3); }
+h1 { font-family: var(--font-head); font-weight: 600; font-size: clamp(25px, 4.2vw, 36px); line-height: 1.28; margin: 0; text-wrap: balance; }
+h2 { font-family: var(--font-head); font-weight: 600; font-size: 22px; line-height: 1.3; margin: 0; text-wrap: balance; }
+h3 { font-size: 16px; font-weight: 600; margin: 0; line-height: 1.45; }
+p { margin: 0; max-width: 72ch; }
+a { color: var(--accent); }
+.lede { font-size: 16.5px; color: var(--ink-2); max-width: 72ch; }
+code, .mono { font-family: var(--font-mono); font-size: .86em; }
+code { background: var(--accent-soft); padding: 1px 5px; border-radius: 4px; overflow-wrap: anywhere; }
+section { display: flex; flex-direction: column; gap: 16px; min-width: 0; scroll-margin-top: 16px; }
+.meta { display: flex; flex-wrap: wrap; gap: 6px 22px; font-size: 13px; color: var(--ink-2); }
+.meta b { font-weight: 500; color: var(--ink-3); }
+
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); gap: 12px; }
+.kpi { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.kpi .label { font-size: 12.5px; color: var(--ink-3); }
+.kpi .value { font-family: var(--font-head); font-weight: 600; font-size: 30px; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.kpi .value small { font-size: 15px; font-weight: 500; color: var(--ink-2); }
+.kpi .note { font-size: 12.5px; color: var(--ink-2); line-height: 1.5; }
+
+.pill { display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 500; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+.pill.good { background: var(--good-bg); color: var(--good-ink); }
+.pill.warn { background: var(--warn-bg); color: var(--warn-ink); }
+.pill.crit { background: var(--crit-bg); color: var(--crit-ink); }
+.pill i { font-style: normal; font-weight: 700; }
+.tag { display: inline-block; font-size: 12px; color: var(--ink-2); border: 1px solid var(--line); border-radius: 4px; padding: 0 6px; white-space: nowrap; line-height: 1.6; }
+
+.panel { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 18px; display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { text-align: left; padding: 9px 14px 9px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+th { font-weight: 500; color: var(--ink-3); font-size: 12.5px; white-space: nowrap; vertical-align: bottom; }
+tr:last-child td { border-bottom: 0; }
+td.id { font-family: var(--font-head); font-weight: 600; color: var(--ink-2); white-space: nowrap; }
+td.id a { color: inherit; text-decoration: none; border-bottom: 1px dotted var(--ink-3); }
+td small { color: var(--ink-3); font-size: 12px; display: block; margin-top: 3px; line-height: 1.5; }
+td.nowrap { white-space: nowrap; }
+table.all td:nth-child(2) { min-width: 130px; }
+table.all td:nth-child(3) { min-width: 300px; }
+table.all td:nth-child(4) { min-width: 150px; }
+table.probes td:nth-child(3) { min-width: 260px; }
+table.probes td:nth-child(4) { min-width: 300px; }
+table.order td:nth-child(2) { min-width: 300px; }
+
+ul.plain { margin: 0; padding-left: 1.15em; display: flex; flex-direction: column; gap: 8px; max-width: 76ch; }
+ol.plain { margin: 0; padding-left: 1.4em; display: flex; flex-direction: column; gap: 8px; max-width: 76ch; }
+
+.pkg { display: flex; flex-direction: column; gap: 12px; scroll-margin-top: 16px; }
+.pkg > p { color: var(--ink-2); }
+.item { display: grid; grid-template-columns: 3.2em 1fr; gap: 4px 14px; padding: 22px 0; border-bottom: 1px solid var(--line); scroll-margin-top: 16px; }
+.item:first-child { padding-top: 2px; } .item:last-child { border-bottom: 0; padding-bottom: 2px; }
+.item .n { font-family: var(--font-head); font-weight: 600; font-size: 22px; line-height: 1.25; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.item .body { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.item .head { display: flex; flex-wrap: wrap; gap: 8px 10px; align-items: center; }
+.item .src { font-size: 12.5px; color: var(--ink-3); }
+.item dl { margin: 0; display: grid; grid-template-columns: 7.2em 1fr; gap: 10px 12px; font-size: 14px; }
+.item dt { color: var(--ink-3); font-size: 13px; padding-top: 1px; }
+.item dd { margin: 0; max-width: 74ch; min-width: 0; }
+.item dd > ul, .item dd > ol, .item dd > pre { margin-top: 8px; }
+.item dd > ul:first-child, .item dd > ol:first-child { margin-top: 0; }
+.item dd > pre + * { margin-top: 8px; }
+.item dd p { margin-top: 8px; }
+@media (max-width: 560px) { .item { grid-template-columns: 1fr; } .item dl { grid-template-columns: 1fr; gap: 2px 0; } .item dt { margin-top: 8px; } }
+
+pre { margin: 0; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6; background: var(--accent-soft); padding: 10px 12px; border-radius: 6px; white-space: pre-wrap; overflow-wrap: anywhere; }
+footer { font-size: 12.5px; color: var(--ink-3); border-top: 1px solid var(--line); padding-top: 16px; display: flex; flex-direction: column; gap: 6px; }
+footer p { max-width: 86ch; }
+/* additions for this page */
+.item .body h4 { margin: 14px 0 4px; font-size: 13px; letter-spacing: .02em; }
+table td.nowrap, table th.nowrap { white-space: nowrap; }
+
+/* On a narrow screen a table of three or more columns keeps readable columns and scrolls sideways in its panel. */
+@media (max-width: 720px) {
+  .scroll table:has(th:nth-child(3)) { min-width: 640px; }
+  .scroll table:has(th:nth-child(5)) { min-width: 880px; }
+}
+
+/* this page: keep the first column of the wide summary tables readable */
+#now td:first-child { min-width: 7.5em; }
+#remove td:first-child, #stages td:first-child { min-width: 9em; }
+#upgrade td:first-child, #open td:first-child, #verify td:first-child { min-width: 9em; }
+.panel > h3 { font-size: 17px; }
+@media (max-width: 720px) {
+  #remove .scroll table:has(th:nth-child(3)), #stages .scroll table:has(th:nth-child(3)),
+  #now .scroll table, #open .scroll table, #upgrade .scroll table { min-width: 940px; }
+}
+
+/* this page: the time bars */
+.bars { display: flex; flex-direction: column; gap: 14px; }
+.bar-row { display: grid; grid-template-columns: minmax(150px, 250px) 1fr; gap: 6px 14px; align-items: center; }
+.bar-row .name { font-size: 13.5px; color: var(--ink-2); line-height: 1.45; }
+.bar-row .name b { color: var(--ink); font-weight: 600; }
+.bar { display: flex; height: 28px; min-width: 0; }
+.bar span { display: flex; align-items: center; justify-content: center; font-size: 11.5px; font-weight: 500; color: #fff; white-space: nowrap; overflow: hidden; }
+.bar span:first-child { border-radius: 5px 0 0 5px; } .bar span:last-child { border-radius: 0 5px 5px 0; } .bar span:only-child { border-radius: 5px; }
+.seg-common { background: #2a78d6; }
+.seg-perf { background: #c8640a; }
+.seg-void { background: repeating-linear-gradient(45deg, #8791a3, #8791a3 6px, #a4adbd 6px, #a4adbd 12px); color: #10141b !important; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 20px; font-size: 12.5px; color: var(--ink-2); }
+.legend i { display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+@media (max-width: 640px) { .bar-row { grid-template-columns: 1fr; } }
+.note { font-size: 13px; color: var(--ink-3); max-width: 80ch; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; padding-right: 18px; }
+#time td:first-child, #effect td:first-child { min-width: 9em; }
+#order td:first-child { min-width: 4.5em; }
+#open td:nth-child(2), #open td:nth-child(3), #open td:nth-child(4) { min-width: 14em; }
+#problems table td:nth-child(2) { min-width: 15em; }
+#later td:first-child { min-width: 9em; }
+.bar span { min-width: 26px; }
+.item .head h3 { font-size: 16.5px; }
+.pkg > h3 { font-size: 18px; font-family: var(--font-head); margin-top: 6px; }
+@media (max-width: 720px) {
+  #time .scroll table, #effect .scroll table, #problems .scroll table, #order .scroll table, #open .scroll table { min-width: 860px; }
+}
+
+#open td:first-child { min-width: 2em; }
+
+</style>
+</head>
+<body>
+<div class="page">
+
+<header>
+  <div class="eyebrow">nanolize 性能验收 · 问题整理和修改方案 · 依据：detectron2 core 的一次运行（main @ a003430d）和最新 main @ cd7fd735 的代码 · 2026-11-23</div>
+  <h1>开了性能验收，detectron2 从不到 3 小时变成 18 小时以上：时间花在哪，怎么改</h1>
+  <p class="lede">同一个仓库、同样的选项，只多开了性能验收（<code>performance=on</code>），一次运行从 2.9 小时变成 17.7 小时还没有结束。这一页结合这次运行的逐步轨迹、跑这次实验的 agent 写的分析页，以及最新 main 的代码，回答三件事：多出来的时间是什么，问题出在代码的哪里，按什么方案改、改完大约剩多少。这里只有方案，没有改任何代码。</p>
+  <div class="meta">
+    <span><b>运行</b> detectron2 core，pair on、parallel on、performance on，Claude Code runner（Fable 5.2，effort high），检查在计算节点上跑</span>
+    <span><b>代码</b> 运行用的是 main @ a003430d（PR #56 合入后）；方案对照最新的 main @ cd7fd735（PR #57 合入后），行号都是后者的</span>
+    <span><b>范围</b> 14 项修改，分四个包；另有 3 项放第二批</span>
+    <span><b>状态</b> 方案，等确认后再动手</span>
+  </div>
+</header>
+
+<section>
+  <div class="kpis">
+    <div class="kpi"><div class="label">这次运行（到分析页生成时）</div><div class="value">17.7 <small>小时，未结束</small></div>
+      <div class="note">不开性能验收的上一次是 2.9 小时。两次的功能清单不一样大，见<a href="#time">时间账</a></div></div>
+    <div class="kpi"><div class="label">其中是重来和空档</div><div class="value">450 <small>分钟</small></div>
+      <div class="note">第一对作业被取消 167 分钟，测试设计整步重做 269 分钟，批处理作业到时 14 分钟。前两项各有一处代码可以避免</div></div>
+    <div class="kpi"><div class="label">基准文件试跑，一遍</div><div class="value">160 <small>分钟</small></div>
+      <div class="note">74 个计时基准文件一个接一个，每个固定跑 16 次进程。这次运行里做了三遍</div></div>
+    <div class="kpi"><div class="label">候选的性能测量，一次</div><div class="value">89 <small>分钟</small></div>
+      <div class="note">同样串行。性能没过就修复再整份重测，最多三次</div></div>
+    <div class="kpi"><div class="label">设计出的测试，试跑和合跑</div><div class="value">94 <small>分钟</small></div>
+      <div class="note">申请了 8 核的节点，这两段却是一个文件接一个文件地跑</div></div>
+    <div class="kpi"><div class="label">按方案改完后（推算）</div><div class="value">约 4.2 <small>小时</small></div>
+      <div class="note">同一份清单、没有重来，到第一次性能测量结束。现在是 16.9 小时，去掉重来是 9.4 小时。见<a href="#effect">预期效果</a></div></div>
+  </div>
+</section>
+
+<section id="summary">
+  <h2>要点</h2>
+  <ul class="plain">
+    <li><b>慢不是一个原因，是三类叠在一起。</b>到第一次性能测量结束的 1013 分钟里：450 分钟是重来和空档，250 分钟是性能验收专有的两段测量（基准试跑 160、候选测量 89），其余 313 分钟是不开性能验收也有的工作，因为这次的清单大得多而变长。见<a href="#time">时间账</a>。</li>
+    <li><b>两次重来各有一处代码可以避免。</b>一次调度器命令 30 秒没有应答，提交检查批次的 <code>sbatch</code> 就算失败，不对账也不重试，做了 268 分钟的测试设计整步作废（<a href="#p1">问题 1</a>）。另一次是清单里的输出对比检查把带路径的 stderr 也算了进去；基线其实在另一个路径下跑过这条检查、看到了输出不同，但只把它记成“不能并行”，没有告诉任何人，165 分钟后才暴露（<a href="#p2">问题 2</a>）。</li>
+    <li><b>性能测量慢在“全串行”和“固定跑满”。</b>每个基准文件 16 次进程、74 个文件排成一队；规则里的“提前结束”在冻结阶段对合格的基准永远不触发。每次进程约 8 秒，其中导入 torch 和 detectron2 就占 3 秒以上。各文件之间本来就互不比较，可以分到几个节点上同时测（<a href="#p3">问题 3</a>、<a href="#p4">问题 4</a>）。</li>
+    <li><b>冻结阶段还有一段没被注意到的串行。</b>设计出的测试文件的试跑和最后合跑，在 8 核的节点上只用 1 核，两段合计 94 分钟（<a href="#p5">问题 5</a>）。</li>
+    <li><b>候选环境没有重新准备的修复已经写过，但不在 main 里。</b>它在 <code>fix-parallel-main</code> 分支上，是 PR #45 合并之后才加的提交，后来 PR #56 把 #45 带回来时没有带上它（<a href="#p6">问题 6</a>）。</li>
+    <li><b>方案分四个包，14 项。</b>包一让重来不再发生，包二给性能测量提速，包三处理冻结和验证里的串行与空转，包四让代价在提交前看得见。每一项写了现状、改法、涉及的函数、风险和要改的测试。见<a href="#plan">修改方案</a>；建议的先后和验证办法见<a href="#order">顺序和验证</a>。</li>
+    <li><b>有 6 件事需要你定</b>，主要是同时申请几个节点、性能修复后先测一部分算不算数、路径相关的检查怎么处理。见<a href="#open">需要你决定的</a>。</li>
+  </ul>
+</section>
+
+
+<section id="time">
+  <h2>时间账</h2>
+  <p>下面四条横条用同一把尺子，画到“第一次性能测量结束”为止（上一次不开性能验收，画的是整次运行）。数字来自这次运行的轨迹；第三、四条是推算，不是实测。</p>
+  <div class="panel">
+    <div class="legend">
+      <span><i class="seg-common"></i>不开性能验收也有的工作</span>
+      <span><i class="seg-perf"></i>性能验收专有的测量（基准试跑、候选测量）</span>
+      <span><i class="seg-void"></i>重来和空档</span>
+    </div>
+    <div class="bars">
+      <div class="bar-row"><div class="name"><b>上一次，不开性能验收</b><br>整次运行 174 分钟（2.9 小时）</div>
+        <div class="bar"><span class="seg-common" style="width:17.2%">174</span></div></div>
+      <div class="bar-row"><div class="name"><b>这一次，实际</b><br>到第一次性能测量结束 1013 分钟（16.9 小时）</div>
+        <div class="bar"><span class="seg-common" style="width:30.9%">313</span><span class="seg-perf" style="width:24.7%">250</span><span class="seg-void" style="width:44.4%">450</span></div></div>
+      <div class="bar-row"><div class="name"><b>这一次，去掉重来</b>（推算）<br>563 分钟（9.4 小时）</div>
+        <div class="bar"><span class="seg-common" style="width:30.9%">313</span><span class="seg-perf" style="width:24.7%">250</span></div></div>
+      <div class="bar-row"><div class="name"><b>按本方案改完后</b>（推算）<br>约 255 分钟（4.2 小时）</div>
+        <div class="bar"><span class="seg-common" style="width:21.4%">217</span><span class="seg-perf" style="width:3.8%">38</span></div></div>
+    </div>
+    <p class="note">第一次性能测量之后，这次运行还在做性能修复和第二次测量：分析页生成时（启动后 17.7 小时）没有结束。性能没过的话，每修复一次要再加一次行为对比和一次 89 分钟的整份测量，最多两次修复。</p>
+  </div>
+
+  <h3>逐段</h3>
+  <div class="panel scroll">
+    <table>
+      <thead><tr><th>阶段</th><th class="num">这一次（分钟）</th><th class="num">上一次（分钟）</th><th>归类</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>阶段 01 和提交</td><td class="num">37.7</td><td class="num">29.6</td><td>共有</td><td>主持会话自己做的功能图和清单</td></tr>
+        <tr><td>第一对作业，取消后重新提交</td><td class="num">167.3</td><td class="num">–</td><td>重来</td><td>清单里两条输出对比检查任何候选都过不了，<a href="#p2">问题 2</a></td></tr>
+        <tr><td>第一次基线</td><td class="num">9.6</td><td class="num">9.8</td><td>共有</td><td>45 条检查</td></tr>
+        <tr><td>测试设计，第一遍</td><td class="num">268.7</td><td class="num">–</td><td>重来</td><td>做到最后一步时 <code>sbatch</code> 超时，整步重做，<a href="#p1">问题 1</a></td></tr>
+        <tr><td>测试设计，用上的那一遍</td><td class="num">305.2</td><td class="num">36.1</td><td>共有 144.9，性能 160.3</td><td>拆分见下一张表</td></tr>
+        <tr><td>封存前的基线</td><td class="num">34.1</td><td class="num">9.8</td><td>共有</td><td>158 条检查，另有 37 个计数文件一起跑</td></tr>
+        <tr><td>封存、导入草稿</td><td class="num">1.2</td><td class="num">46.9</td><td>共有</td><td>上一次的 46 分钟是在等草稿作业写完；这一次冻结得久，草稿早就写完了</td></tr>
+        <tr><td>导入后到行为检查全部通过</td><td class="num">83.9</td><td class="num">42.2</td><td>共有</td><td>其中约 25 分钟（分析页的估计）是缺编译扩展的假失败带来的，<a href="#p6">问题 6</a></td></tr>
+        <tr><td>批处理作业到时</td><td class="num">13.8</td><td class="num">–</td><td>空档</td><td>实验给整次运行设的 14 小时上限到了。不是 nanolize 的问题；之后从存档恢复，没有重做</td></tr>
+        <tr><td>安装检查</td><td class="num">1.6</td><td class="num">（含在上面）</td><td>共有</td><td></td></tr>
+        <tr><td>第一次性能测量</td><td class="num">89.4</td><td class="num">–</td><td>性能</td><td>582 条标准，通过 577 条，<a href="#p4">问题 4</a></td></tr>
+        <tr><td><b>合计</b></td><td class="num"><b>1012.5</b></td><td class="num"><b>174.4</b></td><td></td><td>重来和空档 449.8，性能专有 249.7，共有 313.0</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>测试设计这一步的内部</h3>
+  <p>开了性能验收之后，这一步除了给没有有效测试的叶子设计测试，还给每个有自己源码的选中叶子写基准文件，写完都要在原版上试跑。用上的那一遍 305 分钟这样分：</p>
+  <div class="panel scroll">
+    <table>
+      <thead><tr><th>小步</th><th class="num">这一次</th><th class="num">上一次</th><th>在节点上怎么跑</th><th>对应的问题</th></tr></thead>
+      <tbody>
+        <tr><td>第 1 轮设计会话</td><td class="num">17.6</td><td class="num">12.7</td><td>不用节点。54 个会话同时进行（上一次 7 个），墙钟由最慢的一个决定</td><td>–</td></tr>
+        <tr><td>设计出的测试试跑</td><td class="num">41.5</td><td class="num">10.1</td><td>检查一个接一个跑 34 分钟，敲除 7 分钟</td><td><a href="#p5">问题 5</a></td></tr>
+        <tr><td>基准文件试跑</td><td class="num">160.3</td><td class="num">–</td><td>74 个文件一个接一个，每个 16 次进程；排在测试试跑之后才开始</td><td><a href="#p3">问题 3</a></td></tr>
+        <tr><td>后续两轮和两次评审</td><td class="num">33.1</td><td class="num">3.6</td><td>主要是会话；中间夹着被退回文件的小规模试跑</td><td>–</td></tr>
+        <tr><td>全部接受的文件最后合跑</td><td class="num">52.6</td><td class="num">9.7</td><td>约 150 个文件一个接一个，每个在树里跑 3 次、再在副本里跑 1 次</td><td><a href="#p5">问题 5</a></td></tr>
+        <tr><td><b>合计</b></td><td class="num"><b>305.2</b></td><td class="num"><b>36.1</b></td><td></td><td></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>两次运行不是同一份清单</h3>
+  <p>每次运行都由一个全新的主持会话独立做阶段 01。这一次它把 core 拆得更细：选中 64 项能力（上一次 25 项），没有有效测试、要设计测试的叶子 22 个（上一次 4 个），封存前基线 158 条检查（上一次 68 条）。所以“共有”的 313 分钟比上一次的 174 分钟长，主要是清单变大，不能算在性能验收头上。这一点不是代码缺陷，但它说明冻结阶段的每一步都随清单线性变长，串行的部分尤其明显。要比较两个版本的速度，需要固定同一份功能图和清单。</p>
+</section>
+
+
+<section id="problems">
+  <h2>问题</h2>
+  <p>八个问题，按这次运行里的代价排。每个问题写了运行里看到的现象、代码里的原因（文件和行号是 main @ cd7fd735 的）、这次的代价，以及它在最新 main 上是否还在。前六个有明确的时间代价；后两个不耽误墙钟，但浪费资源或让人看不清发生了什么。</p>
+
+  <div class="panel scroll">
+    <table>
+      <thead><tr><th></th><th>问题</th><th class="num">这次的代价</th><th>性质</th><th>对应的修改</th></tr></thead>
+      <tbody>
+        <tr><td class="id"><a href="#p1">1</a></td><td>一次 <code>sbatch</code> 超时，测试设计整步重做</td><td class="num">269 分钟，$251</td><td><span class="pill crit">流程缺陷</span></td><td><a href="#c11">1.1</a>、<a href="#c12">1.2</a>、<a href="#c13">1.3</a></td></tr>
+        <tr><td class="id"><a href="#p2">2</a></td><td>输出带路径的检查，基线看到了却没有说</td><td class="num">167 分钟，$287</td><td><span class="pill crit">流程缺陷</span></td><td><a href="#c14">1.4</a></td></tr>
+        <tr><td class="id"><a href="#p3">3</a></td><td>基准文件试跑全串行，每个文件固定跑满 16 次</td><td class="num">每遍 160 分钟</td><td><span class="pill warn">设计上的代价</span></td><td><a href="#c21">2.1</a>、<a href="#c22">2.2</a>、<a href="#c23">2.3</a></td></tr>
+        <tr><td class="id"><a href="#p4">4</a></td><td>候选的性能测量串行，修复后整份重测</td><td class="num">每次 89 分钟</td><td><span class="pill warn">设计上的代价</span></td><td><a href="#c22">2.2</a>、<a href="#c24">2.4</a>、<a href="#c13">1.3</a></td></tr>
+        <tr><td class="id"><a href="#p5">5</a></td><td>设计出的测试，试跑和合跑只用 1 核</td><td class="num">94 分钟</td><td><span class="pill warn">设计上的代价</span></td><td><a href="#c31">3.1</a></td></tr>
+        <tr><td class="id"><a href="#p6">6</a></td><td>保存候选后环境没有重新准备，对比出现假失败</td><td class="num">约 25 分钟</td><td><span class="pill crit">流程缺陷</span></td><td><a href="#c32">3.2</a></td></tr>
+        <tr><td class="id"><a href="#p7">7</a></td><td>测量请求总被等待中的节点拒收，旧节点空等</td><td class="num">不占墙钟</td><td><span class="pill warn">资源浪费</span></td><td><a href="#c33">3.3</a></td></tr>
+        <tr><td class="id"><a href="#p8">8</a></td><td>代价提交前看不到，长步骤没有进度，暂停原因说错</td><td class="num">–</td><td><span class="pill warn">可见性</span></td><td><a href="#c41">4.1</a>、<a href="#c42">4.2</a>、<a href="#c43">4.3</a></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <div class="item" id="p1">
+      <div class="n">1</div>
+      <div class="body">
+        <div class="head"><h3>一次 <code>sbatch</code> 超时，做了 268 分钟的测试设计整步作废</h3><span class="pill crit">269 分钟，$251</span></div>
+        <dl>
+          <dt>现象</dt>
+          <dd>主作业在测试设计的最后一步（两次评审之后，把接受的文件合跑一遍）需要申请一个新的节点。提交用的 <code>sbatch</code> 30 秒没有返回，作业暂停。主持会话 18 秒后恢复了它，测试设计从头重做：54 个设计会话、全部试跑，又用了 305 分钟。调度器的记账显示那次提交其实被接受了：一个节点在同一时刻启动，空转 15 分钟后自己结束。</dd>
+          <dt>原因</dt>
+          <dd><ol class="plain">
+            <li>调度器命令统一 30 秒上限，只试一次：<code>check_executor.py:213</code> 的 <code>COMMAND_TIMEOUT = 30</code> 和 <code>_command</code>（441–453）。<code>sbatch</code> 的任何失败都变成 <code>_NotStarted</code>，不重试（1609–1613）；注释的理由是“可能已被接受的请求不发第二遍”。对比之下，排队可以等 <code>queue_timeout × 10</code>（1619，这次是 5 小时），<code>squeue</code> 连续 5 次没应答才算失败（1852–1855）。</li>
+            <li>超时之后只做一件事：按批次的唯一名字 <code>scancel</code> 一次（1651–1657）。之后没有任何代码再去找这个批次；冻结阶段的恢复也不清理（<code>job_runner.py:77</code>）。这次的取消显然没有取消掉那个已被接受的作业（推断：取消发出时调度器还不认识它）。</li>
+            <li>成对作业的主作业绑定在计算节点上，节点不可用的错误在测试设计里被有意原样抛出（<code>execution.py:4904–4909</code>、<code>leaf_test_design.py:1982–1985</code>），worker 把它变成暂停（<code>execution.py:6063–6065</code>）。</li>
+            <li>冻结阶段没有存档。恢复时只认操作记录里状态是 <code>ok</code> 的步骤（<code>job_tools/freeze.py:159</code>、<code>strategies/advice.py:1496–1498</code>）。<code>design_leaf_tests</code> 的状态是 <code>error</code>，于是整步重新调用，换一个新目录 <code>design/call-2</code>（<code>execution.py:5509–5522</code>），所有状态从空开始（<code>leaf_test_design.py:611</code>）。第一遍留在磁盘上的会话结果和试跑记录，没有任何代码读回来；基准试跑的结果根本没有写盘。</li>
+          </ol>
+          <p>同样的暴露面还有两处：封存前的基线（这次 34 分钟）和候选的性能测量（89 分钟），都是“不返回就什么都不留”（<code>job_tools/verify.py:95–117</code>、<code>performance.py:715、729</code>）。每申请一个新节点就是一次 <code>sbatch</code>，这次运行里有 19 次。</p></dd>
+          <dt>最新 main</dt>
+          <dd>相同。<code>check_executor.py</code> 从那次运行到现在没有改动；PR #57 没有增加任何保留未完成步骤的机制。</dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="item" id="p2">
+      <div class="n">2</div>
+      <div class="body">
+        <div class="head"><h3>输出里带工作树路径的检查：基线看到了，但没有说</h3><span class="pill crit">167 分钟，$287</span></div>
+        <dl>
+          <dt>现象</dt>
+          <dd>主持会话在清单里写了 4 条输出对比检查，其中两条的 stderr 里有一条带工作树绝对路径的警告。原版在一棵树里跑，候选在另一棵树里跑，路径必然不同，所以任何候选都过不了。草稿作业连续三个候选都卡在这两条上，165 分钟后主持会话才看出原因，取消这一对作业、改清单、重新提交。</dd>
+          <dt>原因</dt>
+          <dd><ol class="plain">
+            <li>输出对比检查比较的是退出码加 stdout 和 stderr 的原始摘要（<code>verification.py:1083–1087</code>、2249–2259），工作树路径不做替换。只有场景检查的 runner 会把路径换成占位符（<code>scenario_runner.py:206–212</code>）。</li>
+            <li>基线在同一棵树上重复跑一条检查，带路径的输出看起来是稳定的。</li>
+            <li>但是，只要检查 worker 多于 1 个（这次是 8 个），基线还会把每条通过的检查拿到一份私有副本里再跑一次。副本在另一个路径下，两次的输出摘要也会被比较（<code>verification.py:1553–1561</code>，<code>_same_observation</code> 1321–1326）。摘要不同的唯一后果是这条检查不被标成 <code>parallel_safe</code>：不记问题，不发事件。也就是说，草稿作业在提交后约 4 分钟做完基线时，这个信号已经有了，只是被丢掉了。（推断：被取消的那对作业的基线记录没有拿到，这个字段没有直接看到。）</li>
+            <li>提交之前的各项审计都不执行检查，发现不了这种问题。</li>
+          </ol></dd>
+          <dt>最新 main</dt>
+          <dd>相同。PR #57 新增的范围基线会在第三棵树里再跑一遍保留的检查；这种检查在那里会被记成“在范围里失败”，原因是错的，候选照样过不了（读代码得出，没有跑过）。</dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="item" id="p3">
+      <div class="n">3</div>
+      <div class="body">
+        <div class="head"><h3>基准文件试跑：全串行，每个文件固定跑满 16 次</h3><span class="pill warn">每遍 160 分钟</span></div>
+        <dl>
+          <dt>现象</dt>
+          <dd>用上的那一遍 160 分钟（契约记下的试跑时间是 9752 秒）。这次运行里做了三遍：第一对作业里做到 81 分钟被取消，第二对作业的两遍各约 150 和 160 分钟。</dd>
+          <dt>原因</dt>
+          <dd><ol class="plain">
+            <li>一个文件的试跑是：在原版上校准 1 次，然后最多 5 轮，每轮三棵树各跑一次（原版、原版再一次、把这个叶子减慢一倍的原版），共 16 次进程（<code>performance.py:377–445</code>，<code>REPETITIONS = 5</code>）。</li>
+            <li>规则里有“3 轮后提前结束”，条件是被判的那棵树每一轮都比原版慢不到允许值的一半（<code>settled</code>，275–282，用在 442–444）。冻结阶段被判的是故意减慢一倍的树，合格的基准必然不满足这个条件，所以总是跑满 5 轮。这次 585 个基准里 582 个是合格的标准。</li>
+            <li>文件一个接一个，同一时间只有一个进程（587–588；<code>_measure_here</code> 是三层普通循环）。74 × 16 = 1184 次进程用了 9752 秒，平均每次 8.2 秒。</li>
+            <li>每次进程里计入结果的计时很少：每个函数的计时调用合计约 0.2 秒（<code>SAMPLE_SECONDS</code>；<code>benchmark_runner.py:132–141</code>），一个文件平均 5 个函数。其余主要是启动。我在这台集群的登录机上用同样的依赖量过：一个进程导入 torch 和 detectron2 要 2.8 秒（有字节码缓存）到 6.3 秒（没有）。</li>
+            <li>整份试跑作为一个请求发给一个节点（<code>_batch</code>，705–750），并且排在这一轮的测试试跑之后才开始（<code>leaf_test_design.py:925、934</code>）。</li>
+            <li>各文件之间互不比较：每个统计量只用同一个文件、同一批里的三棵树（216–246）。文档也写着跑不完的文件可以换一批、用自己的三棵树重测（<code>docs/graph-rewrite.md:898–901</code>）。按文件拆到几个节点上，不改变任何一个比较。</li>
+          </ol></dd>
+          <dt>最新 main</dt>
+          <dd>相同。<code>performance.py</code> 和 <code>benchmark_runner.py</code> 没有改动。</dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="item" id="p4">
+      <div class="n">4</div>
+      <div class="body">
+        <div class="head"><h3>候选的性能测量：89 分钟一次，修复后整份重测</h3><span class="pill warn">每次 89 分钟，最多三次</span></div>
+        <dl>
+          <dt>现象</dt>
+          <dd>第一次测量用了 5359 秒，74 个文件，平均每个 72 秒，约等于 3 轮 × 3 棵树：多数文件 3 轮后提前结束了。582 条标准里 5 条慢于允许值，于是进入性能修复。修复之后要重新做完整的行为对比、安装检查和整份性能测量。</dd>
+          <dt>原因</dt>
+          <dd><ol class="plain">
+            <li>和试跑是同一套串行执行（问题 3 的第 3、5、6 条）。</li>
+            <li>每个有新代码的候选都要自己的一份完整测量（<code>job_tools/verify.py:454–512</code>），工具没有“只测某几个基准”的参数。没过的 5 条标准分属 5 个文件，重测它们只要几分钟，现在只能重测全部 74 个。</li>
+            <li>582 条标准每次全部重测，上一次通过的标准也可能因为噪声在下一次不过。这次没过的 5 条里，有 3 条的原版自身噪声在 11% 到 44% 之间。</li>
+            <li>测量中途出错不留任何结果：已经测完的文件只存在局部变量里（<code>performance.py:715、745</code>）。</li>
+          </ol></dd>
+          <dt>最新 main</dt>
+          <dd>相同。</dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="item" id="p5">
+      <div class="n">5</div>
+      <div class="body">
+        <div class="head"><h3>设计出的测试：试跑和合跑在 8 核的节点上只用 1 核</h3><span class="pill warn">94 分钟</span></div>
+        <dl>
+          <dt>现象</dt>
+          <dd>第 1 轮设计出的文件试跑 41.5 分钟，其中跑检查 34 分钟、敲除 7 分钟。最后把接受的约 150 个文件合跑一遍 52.6 分钟。作业申请的节点是 8 核。作废的第一遍里，同样的试跑约 50 分钟。</dd>
+          <dt>原因</dt>
+          <dd><ol class="plain">
+            <li>基线的检查可以在私有副本里同时跑（<code>_observed_in_copies</code>，<code>verification.py:1565</code>），但带 <code>vary</code> 的批次除外（1502：<code>if probe_copies and workers &gt; 1 and not vary</code>）。<code>vary</code> 正是设计文件的试跑：重复运行换不同的哈希种子（<code>leaf_test_design.py:1766–1767</code>）。于是每个文件在树里一个接一个地跑 3 次，通过的再到副本里跑 1 次。</li>
+            <li>代码写了两条理由（<code>verification.py:1590–1595</code>）：副本里的重复沿用第一次的种子；试跑要查“这个文件有没有在项目里留下东西”，而副本只看被监视的文件。两条都是现有实现的限制，不是原理上不能并行。</li>
+            <li>最后的合跑是同一个函数（<code>leaf_test_design.py:1134–1148</code>），同样串行。</li>
+            <li>每次运行同样要付启动的几秒（问题 3 第 4 条）。</li>
+          </ol></dd>
+          <dt>最新 main</dt>
+          <dd>相同。PR #57 还在评审之前加了一次范围试跑（把接受的文件放到去掉了被移除能力的树里再跑一遍），这一步会更长（没有实测）。</dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="item" id="p6">
+      <div class="n">6</div>
+      <div class="body">
+        <div class="head"><h3>保存候选后环境没有重新准备，第一次对比出现假失败</h3><span class="pill crit">约 25 分钟</span></div>
+        <dl>
+          <dt>现象</dt>
+          <dd>detectron2 需要一个编译扩展和一条配置链接，都被 Git 忽略，由所有者的准备配方（<code>prepare_checks</code>）生成。导入草稿、保存候选或合并并行组之后，第一次对比有十几条检查报 <code>Cannot import 'detectron2._C'</code>；controller 看出原因，调用 <code>prepare_environment</code> 再对比，这些失败就没有了。主作业里，导入后第一次完整对比 27 条没过，重新准备后剩 10 条；后来的一次 17 条里有 15 条是这样。草稿作业每次保存后都遇到。</dd>
+          <dt>原因</dt>
+          <dd><ol class="plain">
+            <li>所有产生候选的工具都走同一个函数 <code>authoring.save</code>（<code>job_tools/authoring.py:1085</code>）。它调用 <code>rewrite.integrate</code>，后者遍历候选工作树，把不属于校验方的文件全部删除（<code>rewrite.py:1818–1843</code>），不管 Git 是否忽略它们。配方生成的文件就这样没了。</li>
+            <li>配方在作业开始时每棵树只跑一次（<code>strategies/advice.py:1483–1485</code>），之后只有 controller 的 agent 主动调用才会再跑。主线、固定策略和 <code>compare_behavior</code> 都不检查候选树是不是准备过。</li>
+            <li>controller 的指南没有告诉它“保存会删掉准备好的文件”。每个作业的 agent 都是从失败里自己发现的；没有 agent 时，这些失败会被当成行为退化交给作者去修。</li>
+            <li>这个修复写过：提交 <code>8002df1b</code>“保存删掉了配方留下的文件之后，按规则重新准备候选”。它在 <code>fix-parallel-main</code> 分支上，是 PR #45 合并 77 分钟之后加的三个提交之一。PR #56 把 #45 带回 main 时只带了合并时的内容，这三个提交都不在 main 里。</li>
+          </ol></dd>
+          <dt>最新 main</dt>
+          <dd>相同。<code>rewrite.py</code>、<code>job_tools/authoring.py</code>、<code>strategies/advice.py</code> 没有改动。</dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="item" id="p7">
+      <div class="n">7</div>
+      <div class="body">
+        <div class="head"><h3>测量请求总被等待中的节点拒收，用完的节点空等 15 分钟</h3><span class="pill warn">不占墙钟</span></div>
+        <dl>
+          <dt>现象</dt>
+          <dd>节点请求记录里，每次大的测量之前都有一条“拒收”，然后作业新申请一个节点；拒收的那个节点再空等 15 分钟才退出。有一段时间同时有三个分配。</dd>
+          <dt>原因</dt>
+          <dd><ol class="plain">
+            <li>一个保留着的分配接不接下一个请求，看请求声明需要的时间是否小于分配剩下的时间（<code>check_worker.py:126–127</code>）。对没有实测耗时的请求（测量永远是），这个数是没有封顶的上界（<code>check_executor.py:1532</code>）：74 个文件的试跑是 300 + 74 × 31 × 30 ≈ 69000 秒，超过任何分配的 240 分钟上限，所以永远被拒。</li>
+            <li>拒收之后空闲计时重新开始（<code>check_worker.py:172–176</code>）；成对作业的主作业空闲上限是 900 秒（<code>pair.py:49</code>）。步骤结束时不会主动释放分配，只在 worker 的这次启动结束时释放（<code>execution.py:5786–5793</code>）。</li>
+          </ol>
+          <p>这次每次重新申请只排了 24 到 31 秒，所以没有耽误作业；在排队久的集群上，每一次重新申请就是一次排队。</p></dd>
+          <dt>最新 main</dt>
+          <dd>相同。</dd>
+        </dl>
+      </div>
+    </div>
+
+    <div class="item" id="p8">
+      <div class="n">8</div>
+      <div class="body">
+        <div class="head"><h3>代价在提交前看不到，长步骤里没有进度，暂停的原因说错了</h3><span class="pill warn">可见性</span></div>
+        <dl>
+          <dt>现象和原因</dt>
+          <dd><ol class="plain">
+            <li>提交前的冻结估计只说模型调用的次数（<code>leaf_test_design.py:1531–1577</code>），不说基准试跑和每次性能测量要多久。作业申请节点时已经在用一个算式估这段时间（<code>performance.py:723–725</code>），提交前完全可以给出量级。</li>
+            <li>160 分钟的基准试跑期间只有开始时的一条进度（<code>leaf_test_design.py:923</code>）。节点上测完一个文件不写任何东西，作业这边只能等整个请求返回。</li>
+            <li>暂停事件对每一种节点错误都是同一句“在所有者的排队时限内无法使用计算节点”（<code>execution.py:6133–6137</code>）。这次并没有排队超时，是 <code>sbatch</code> 命令本身没有返回。</li>
+          </ol></dd>
+        </dl>
+      </div>
+    </div>
+  </div>
+
+  <h3>不算缺陷、但要知道的</h3>
+  <ul class="plain">
+    <li><b>批处理作业到时。</b>整次运行所在的批处理作业设了 14 小时上限，到时后所有进程被结束。这是实验的安排。之后作业从封存后的存档恢复，没有重做任何一步，恢复是按设计工作的。但如果它发生在封存之前，整个冻结阶段会重来，这正是包一要解决的情况。</li>
+    <li><b>设计会话变多。</b>开了性能验收，每个有自己源码的选中叶子都有一个设计会话（54 个，上一次 7 个），一遍约 $150。这是设计本身；它们同时进行，墙钟只有 17 分钟。</li>
+    <li><b>最新 main 的冻结阶段会更长。</b>PR #57 在每次封存前的基线之后加了范围基线（在第三棵树里准备环境、再跑一遍保留的检查），在测试设计的评审之前加了范围试跑。这次运行没有它们。在最新 main 上原样重跑，冻结阶段会比这次更长；长多少没有实测。</li>
+  </ul>
+</section>
+
+
+<section id="plan">
+  <h2>修改方案</h2>
+  <p>四个包，14 项。每一项写了改法、涉及的函数、要守住的东西、要动的测试和预期的效果。行号是 main @ cd7fd735 的。所有“预期”都是按这次运行的数字推算的，没有实测。</p>
+
+  <div class="pkg" id="pkg1">
+    <h3>包一：让重来不再发生</h3>
+    <p>这次运行 42% 的时间是重来。这个包针对两次重来各自的起因（1.1、1.4），再让长步骤在别的原因打断时不必从头做（1.2、1.3）。</p>
+    <div class="panel">
+
+      <div class="item" id="c11">
+        <div class="n">1.1</div>
+        <div class="body">
+          <div class="head"><h3>提交没有应答时，先对账，再有限次重试</h3><span class="tag">问题 1</span><span class="pill good">改动小</span></div>
+          <dl>
+            <dt>改法</dt>
+            <dd><ol class="plain">
+              <li><code>sbatch</code> 超时或应答丢失时不立刻判失败。每个批次有唯一的名字（<code>nanolize-checks-…</code>），先按名字查调度器，最多查 120 秒。查到了，就取得作业号，当作一次正常的提交继续等它启动。</li>
+              <li>查不到：按名字取消一次，然后用一个新的批次名重新提交，间隔递增，最多 3 次。“可能已被接受的请求不发第二遍”这条规则不变：旧名字已经对过账并取消，新提交是另一个名字。</li>
+              <li>都不行，才像现在一样报节点不可用、暂停作业。</li>
+              <li><code>squeue</code> 不应答的容忍从“连续 5 次”改成按时间算（比如 5 分钟）。现在如果它立刻报错，6 次轮询只隔十几秒。</li>
+              <li>冻结阶段的恢复也清理上一次留下的批次（现在只有带存档的恢复才清理）。</li>
+            </ol></dd>
+            <dt>涉及</dt>
+            <dd><code>check_executor.py</code>：<code>_submit_once</code>（1594–1616、1651–1660）、<code>_state</code>（1799–1810，已经支持按名字查）、<code>_wait</code> 和 <code>_send</code> 里的 <code>MAX_UNANSWERED</code>（1731–1735、1852–1855）；<code>job_runner.py:77</code>。代码库里另一处 Slurm 客户端已经有同样的对账做法，可以照着写：<code>execution_backends.py</code> 的 <code>RECONCILE_GRACE = 120</code> 和 <code>_reconcile</code>（349–351、454–482）。</dd>
+            <dt>要守住的</dt>
+            <dd>任何时候一个批次最多对应一个活着的分配。重试之前必须先完成对账和取消；取消没被接受时记录保持打开，由现有的清理（<code>reap</code>）再问。</dd>
+            <dt>测试</dt>
+            <dd>要改：<code>tests/test_check_executor.py</code> 里断言“超时后只有一次 <code>sbatch</code> 和一次按名字的 <code>scancel</code>”的两个用例（1129、1175 附近）。要加：超时但作业已被接受（对账后接着用）、超时且没被接受（换名重试成功）、三次都失败（暂停，和现在一样）。测试里已有替身调度器（<code>tests/stand_in_scheduler.py</code>）。</dd>
+            <dt>预期</dt>
+            <dd>这次的 269 分钟和 $251 不会发生。调度器短暂不应答（重启、切换）不再让作业暂停。</dd>
+          </dl>
+        </div>
+      </div>
+
+      <div class="item" id="c12">
+        <div class="n">1.2</div>
+        <div class="body">
+          <div class="head"><h3>测试设计被打断后接着做，不从头来</h3><span class="tag">问题 1</span><span class="pill warn">改动最大的一项</span></div>
+          <dl>
+            <dt>改法</dt>
+            <dd><p>测试设计的控制流只取决于四种耗时调用的结果：设计者和评审者的会话、测试试跑、基准试跑、范围试跑。做法是“重放”：重做时仍然从头执行这个函数，但每到一处耗时调用，先看上一遍留下的结果，输入完全相同就直接取用，不同就照常执行。这样不需要把函数内部的二十多个状态变量存盘。</p>
+            <ol class="plain">
+              <li><b>会话结果</b>：按“角色、提示全文（去掉随时钟变的会话时限）、schema、放进工作区的文件、所在树的内容、runner 配置、nanolize 版本”算一个摘要。上一遍同摘要的会话已经结束的，取它的答案和它工作区里写的文件。第一遍的会话目录本来就留在磁盘上，现在只是没人读。</li>
+              <li><b>测试试跑结果</b>：按“树的内容（含这一轮的文件）、试跑清单、选择、策略”再加基线指纹已经在量的东西（解释器、已装的包、原生二进制、节点种类）算摘要。</li>
+              <li><b>基准试跑结果</b>：按文件保存，见 <a href="#c13">1.3</a>。</li>
+              <li>重做一次没做完的调用时沿用它的标识。检查名里带着调用的标识，标识一变，试跑清单的摘要就对不上。</li>
+            </ol>
+            <p>可以分两步交付：先做会话结果（省下大部分模型花费，风险最小），再做试跑结果。</p></dd>
+            <dt>涉及</dt>
+            <dd><code>leaf_test_design.py</code>：<code>_run</code>（2189–2197）、<code>_trial</code> 和 <code>_captured</code>（1701–1798）、<code>_timed</code>（1960–2001）、<code>design_tests</code> 里调用它们的几处（748–756、925、934、1003、1142）；<code>execution.py</code>：<code>_design_place</code>（5509–5522）、<code>_freeze_designed_tests</code> 的开头（4838、4876–4900）；<code>effort_runner.py</code> 的“运行目录必须是新的空目录”规则（651–653）。</dd>
+            <dt>要守住的</dt>
+            <dd>只取输入完全相同的片段，宁可多做不可错用。随时钟变化的分支（轮次的截止时间）重放时可能走到别的路上，那时照常执行即可。原版的提交、计划的摘要、校验策略、目标叶子任何一项变了，整遍都不复用。</dd>
+            <dt>测试</dt>
+            <dd>要改：<code>tests/test_check_executor_requests.py</code> 里断言重做时出现 <code>design/call-2</code> 的用例（1072 附近）、<code>tests/test_flexible_freeze.py</code>（112 附近）。要加：在每一种耗时调用之后打断，恢复后断言已完成的会话和试跑没有再跑、最终接受的文件和不打断时相同。</dd>
+            <dt>预期</dt>
+            <dd>这次那样的打断发生在最后一步：重做只需要再跑最后的合跑，约 53 分钟，而不是 305 分钟；模型花费接近 0，而不是 $251。所有者主动暂停、worker 被结束、节点中途失效时同样适用。</dd>
+          </dl>
+        </div>
+      </div>
+
+      <div class="item" id="c13">
+        <div class="n">1.3</div>
+        <div class="body">
+          <div class="head"><h3>性能测量按文件落盘，出错后只补没测的</h3><span class="tag">问题 1、4</span></div>
+          <dl>
+            <dt>改法</dt>
+            <dd>节点上每测完一个基准文件，就把这个文件的结果写到批次目录里（共享文件系统上）。作业这边：请求中途失败时，已经写出的文件结果照样收下；整次测量被打断后再调用时，只测还没有结果的文件。保存的是每个文件在自己那一批里得出的统计量，不拿这一批的时间去和另一批比，所以“不拿存下来的时间和以后的时间比”这条原则不受影响。</dd>
+            <dt>涉及</dt>
+            <dd><code>performance.py</code>：<code>_measure_here</code>（576–696，每个文件测完处）、<code>_batch</code>（705–750，<code>found</code> 现在是局部变量）、<code>trial</code> 和 <code>compare</code>；<code>check_worker.py</code>（请求目录）；<code>job_tools/verify.py</code> 的 <code>_observe</code>（95–117）。</dd>
+            <dt>要守住的</dt>
+            <dd>部分结果只对同一个候选提交、同一份性能契约（按摘要）、同一种节点有效。候选测量里“慢于允许值要在同一批里再测一次确认”的规则不变，确认是文件内部的事。</dd>
+            <dt>测试</dt>
+            <dd>要加：测到一半节点失效，重试只发剩下的文件，最终记录和一次测完时逐项相同；契约或候选变了，部分结果作废。</dd>
+            <dt>预期</dt>
+            <dd>一次 89 分钟的测量或 160 分钟的试跑被打断时，损失从整段降到一个文件（约 1 到 2 分钟）。它同时是 <a href="#c22">2.2</a> 分片和 <a href="#c42">4.2</a> 进度的基础。</dd>
+          </dl>
+        </div>
+      </div>
+
+      <div class="item" id="c14">
+        <div class="n">1.4</div>
+        <div class="body">
+          <div class="head"><h3>基线说出“输出随工作树路径变化”的检查</h3><span class="tag">问题 2</span><span class="pill good">改动小</span></div>
+          <dl>
+            <dt>改法</dt>
+            <dd><ol class="plain">
+              <li>基线在副本里重跑输出检查时（这一步已经在做），如果退出码和用例都相同、只有输出摘要不同，就在结果上标出来，并用现有的“第一处不同”函数指出是哪个流、是不是只差在路径或地址上。</li>
+              <li>把它记成基线的一个问题，和现有的“原版两次输出不同”同一类：这条检查的输出不能当作候选的标准，对比时判成“未验证”而不是“退化”，不会再让作者去修一个修不了的东西。</li>
+              <li>基线结束时发一条事件，点名这些检查和原因。成对作业的草稿作业在提交后几分钟就做完基线，主持会话几分钟内就能看到。</li>
+              <li>只有一个检查 worker 时，现在不做副本里的那次运行；改成对每条通过的输出检查补一次（一份树的副本、每条检查一次运行）。</li>
+            </ol></dd>
+            <dt>涉及</dt>
+            <dd><code>verification.py</code>：<code>_run_checks_here</code> 末尾（1553–1561）、基线问题的汇总（2486–2504）、<code>compare_result</code>（1078–1087）；<code>assertion_feedback.first_difference</code>（496–530，已经能分辨“只差在被遮掉的部分”）；<code>job_tools/freeze.py</code> 发事件处（894–913）。</dd>
+            <dt>要守住的</dt>
+            <dd>不改任何摘要的算法，已保存的基线和校验包照常可比。另一个办法是在算摘要前把工作树路径换成占位符（场景检查的 runner 就是这样做的），那样这类检查直接就能通过，但所有输出摘要都会变；要不要这样做见<a href="#open">需要你决定的</a>。</dd>
+            <dt>测试</dt>
+            <dd>要加：一条把当前目录打印到 stderr 的输出检查，基线报出这个问题并发事件；候选对比判“未验证”；单 worker 时同样报出。</dd>
+            <dt>预期</dt>
+            <dd>这次的 167 分钟和 $287 变成提交后约 5 分钟的一条事件。主持会话仍然要改清单重新提交，但不会先白跑两个多小时。</dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="pkg" id="pkg2">
+    <h3>包二：性能测量提速</h3>
+    <p>不改变任何一个基准“怎样算慢”的判定：每个文件仍然在一台机器上、三棵树轮流、一次只跑一个进程。变的是文件之间怎么排，以及判定已经明确时何时停。</p>
+    <div class="panel">
+
+      <div class="item" id="c21">
+        <div class="n">2.1</div>
+        <div class="body">
+          <div class="head"><h3>试跑里判定已经明确，3 轮就结束</h3><span class="tag">问题 3</span><span class="pill good">改动小</span></div>
+          <dl>
+            <dt>改法</dt>
+            <dd>冻结阶段的试跑增加一个对称的提前结束条件：3 轮之后，如果一个文件的每个函数都已经明确“测得出减慢”，这个文件就结束。“明确”沿用代码里已有的判断：两棵原版树之间、各自前后之间的差都在允许值之内，并且减慢的那棵树每一轮都慢过允许值（<code>statistic</code> 里的 <code>every_round</code>）。有噪声的、接近边界的函数照旧跑满 5 轮，“噪声太大”和“测不出减慢”这两种结论的判法不变。</dd>
+            <dt>涉及</dt>
+            <dd><code>performance.py</code>：<code>_time_file</code> 里的 <code>measurement</code>（414–445）、<code>settled</code> 旁边加一个判断（275–282）、<code>statistic</code>（216–246）。</dd>
+            <dt>要守住的</dt>
+            <dd>契约里记下的“原版噪声”对这些文件来自 3 轮而不是 5 轮。这个数只是记录：候选测量时噪声是当场重新量的，不读契约里的数。</dd>
+            <dt>测试</dt>
+            <dd>要加：减慢明确的文件在 3 轮后结束、共 10 次进程；有一个函数噪声大的文件跑满 5 轮；结论和现在逐项相同。</dd>
+            <dt>预期</dt>
+            <dd>每个文件从 16 次进程降到 10 次。这次 585 个基准里 582 个是合格的标准，几乎所有文件都适用：160 分钟降到约 100 分钟。</dd>
+          </dl>
+        </div>
+      </div>
+
+      <div class="item" id="c22">
+        <div class="n">2.2</div>
+        <div class="body">
+          <div class="head"><h3>把基准文件分到几个节点上同时测</h3><span class="tag">问题 3、4</span><span class="pill warn">收益最大</span></div>
+          <dl>
+            <dt>改法</dt>
+            <dd><ol class="plain">
+              <li>把要测的文件分成 K 组，每组一个请求，发给各自的分配，同时进行。每组内部和现在完全一样：自己的三棵树，轮流跑，一次一个进程，时间不够的文件换一批重测。</li>
+              <li>分组规则：试跑时同一个叶子的文件放在一组（它们共用一棵减慢的树）；按预计耗时把各组配平。预计总时间很短（比如不到 10 分钟）时不分组。</li>
+              <li>K 由所有者的设置给出（<code>performance</code> 里加一项），检查在本机跑时固定为 1：一台机器上永远不同时跑两个计时进程。</li>
+              <li>记录里的“在哪测的”保留一个值，加上批次数；任何一组报出整批级别的原因（树导不出来、契约文件变了）时，整次测量按现在的规则处理。</li>
+            </ol></dd>
+            <dt>涉及</dt>
+            <dd><code>performance.py</code>：<code>_batch</code>（705–750）和它的两个调用者 <code>trial</code>（779）、<code>compare</code>（1026–1028）；<code>check_executor.py</code>：<code>SlurmExecutor.call</code>、<code>_submit_once</code>、<code>_servers</code>、<code>_send</code> 现在只被一个调用者同步使用，挑选空闲分配的那一步（1683–1685）要加锁；发请求的线程要带上作业的环境上下文（副本并行跑检查时已经这样做，<code>verification.py:1286–1290</code>）。文档和事件里的“一批、一台机器”改成“每个文件在一批、一台机器上”（<code>docs/graph-rewrite.md:745–753、898–901</code>，<code>job_tools/verify.py:495–496</code>）。</dd>
+            <dt>要守住的</dt>
+            <dd>一个文件的三棵树永远在同一批、同一台机器上，并且串行。两个分配可能落在同一台物理机上（提交时没有独占），这和现在别人的作业落在同一台机器上是同一种情况，由现有的噪声处理应对（原版对原版、放宽允许值、改用处理器时间）。没有选“一个大节点上分几条通道”：代码里没有绑核的支持，同一台机器上几条通道会互相抢内存带宽，噪声是相关的。</dd>
+            <dt>测试</dt>
+            <dd>要加：K 组的结果按路径合并后和一组测完逐项相同；一组失败时其余组的结果保留（配合 1.3）；本机执行时不分组；同一叶子的文件不被拆开。</dd>
+            <dt>预期</dt>
+            <dd>K = 4 时，试跑从 100 分钟（已含 2.1）降到约 27 分钟，候选测量从 89 分钟降到约 24 分钟。总的核时不变，只是同时占用 K 个分配。</dd>
+          </dl>
+        </div>
+      </div>
+
+      <div class="item" id="c23">
+        <div class="n">2.3</div>
+        <div class="body">
+          <div class="head"><h3>基准试跑和测试试跑同时进行</h3><span class="tag">问题 3</span></div>
+          <dl>
+            <dt>改法</dt>
+            <dd>一轮设计结束后，现在先试跑测试、再试跑基准。两者互不依赖结果，改成同时开始。基准试跑用自己的一份私有仓库（和设计用的那份同样的做法建出来），这样测试在树里跑时留下的临时文件不会被带进基准的导出。</dd>
+            <dt>涉及</dt>
+            <dd><code>leaf_test_design.py</code>：<code>ask</code> 里试跑的那一段（920–934）；<code>execution.py:4879–4884</code>（私有仓库和借用原生二进制的做法）。需要 2.2 里执行器支持同时发两个请求。</dd>
+            <dt>要守住的</dt>
+            <dd>任何一边遇到节点不可用，处理和现在一样。两边都受同一个截止时间约束。</dd>
+            <dt>测试</dt>
+            <dd>要加：两个试跑的结果和先后执行时相同；一边失败时另一边的结果不丢。</dd>
+            <dt>预期</dt>
+            <dd>每一轮省下测试试跑的时间；这次第 1 轮是 41.5 分钟。</dd>
+          </dl>
+        </div>
+      </div>
+
+      <div class="item" id="c24">
+        <div class="n">2.4</div>
+        <div class="body">
+          <div class="head"><h3>性能修复之后，先只测上次没过的</h3><span class="tag">问题 4</span></div>
+          <dl>
+            <dt>改法</dt>
+            <dd><ol class="plain">
+              <li><code>compare_performance</code> 增加一个可选参数：只测指定的基准（按 <code>perf-N</code> 编号，实际测它们所在的文件）。这样的一次是“筛查”，和行为对比里的定向对比同样对待：它的记录永远不是“通过”，不算候选的性能证据。</li>
+              <li>性能修复之后的主线改成：先筛查上次没过的基准。还没过，就继续修复，不付整份测量；过了，再做整份测量，以整份的结果为准。</li>
+            </ol></dd>
+            <dt>涉及</dt>
+            <dd><code>job_tools/verify.py</code>：<code>observe_performance</code>（444–512）；<code>performance.py</code>：<code>compare</code>（967–1040，按文件挑选）；<code>strategies/advice.py</code> 里性能修复之后的步骤（53–70 和主线）；controller 的指南（<code>prompts/prompts.json</code>，改后重新生成 <code>docs/prompts.md</code> 和 <code>tests/prompt_views.json</code>）。</dd>
+            <dt>要守住的</dt>
+            <dd>“一次通过或失败的测量代表这份代码，不会再测”这条规则只对整份测量成立，筛查不改变它。筛查的结果不让一个候选被判为通过。</dd>
+            <dt>测试</dt>
+            <dd>要加：筛查没过时不触发整份测量；筛查过了之后整份测量照常进行并决定结果；只有筛查记录的候选在验收里仍然是“性能未测”。</dd>
+            <dt>预期</dt>
+            <dd>一次没修好的性能修复，测量代价从 89 分钟降到几分钟（这次是 5 个文件）。配合 2.2，修好的那一次是筛查几分钟加整份约 24 分钟。</dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="pkg" id="pkg3">
+    <h3>包三：冻结和验证里的串行与空转</h3>
+    <div class="panel">
+
+      <div class="item" id="c31">
+        <div class="n">3.1</div>
+        <div class="body">
+          <div class="head"><h3>设计文件的试跑进副本并行</h3><span class="tag">问题 5</span></div>
+          <dl>
+            <dt>改法</dt>
+            <dd><ol class="plain">
+              <li>让设计文件的试跑也用基线已有的“在私有副本里同时跑”：每个文件在一份副本里跑，它的重复运行在同一份副本里用试跑规定的不同种子。</li>
+              <li>“有没有在项目里留下东西”按副本判断，用试跑自己那套完整的比较，而不是只看被监视的文件。一份副本同一时间只跑一个文件，所以跑完比一次就能准确归到这个文件上；现在是整批跑完发现树变了，再把每个文件单独重跑一遍来找。</li>
+              <li>在副本里没通过、前后不一致、或留下了东西的文件，回到树里按现在的方式串行再跑，以树里的结果为准。这样任何一条拒绝都是树里看到过的，和基线对副本的规则一致。</li>
+            </ol></dd>
+            <dt>涉及</dt>
+            <dd><code>verification.py</code>：<code>_run_checks_here</code>（1494–1562，1502 的条件）、<code>_observed_in_copies</code>（1565–1626）、<code>_in_copies</code>（1227–1310）、<code>_repeat_stability</code>（1142–1176）；<code>leaf_test_design.py</code>：<code>_trial</code>（1722–1798）、<code>_leaving</code> 和 <code>_resources</code>（1801–1870）。</dd>
+            <dt>要守住的</dt>
+            <dd>拒绝一个文件的标准不变：在原版上通过、换种子重复一致、敲除自己的叶子会失败、不在项目里留东西。只是通过的多数不必排队。副本要占磁盘（每个 worker 一份树）。</dd>
+            <dt>测试</dt>
+            <dd>要加：8 个 worker 时接受和拒绝的文件集合与 1 个 worker 时相同；一个留下文件的测试被准确点名；一个只在某个种子下失败的测试照样被拒。</dd>
+            <dt>预期</dt>
+            <dd>这次 8 个 worker：第 1 轮试跑里的 34 分钟降到 6 分钟左右，最后合跑的 52.6 分钟降到约 12 分钟（按加速 5 倍估，没有实测）。PR #57 加的范围试跑也走同一条路，同样受益。</dd>
+          </dl>
+        </div>
+      </div>
+
+      <div class="item" id="c32">
+        <div class="n">3.2</div>
+        <div class="body">
+          <div class="head"><h3>保存候选之后自动重新准备环境</h3><span class="tag">问题 6</span><span class="pill good">修复已经写过</span></div>
+          <dl>
+            <dt>改法</dt>
+            <dd><ol class="plain">
+              <li>把 <code>fix-parallel-main</code> 分支上的提交 <code>8002df1b</code> 带回来。它的做法是：准备候选时记下配方生成了哪些文件；之后只要这些文件不在工作树里了，主线就先安排一次 <code>prepare_environment</code>，不经过 controller 的一轮；指南和工具说明里也写明了这件事。9 个文件，其中 7 个可以直接应用，<code>strategies/advice.py</code> 和 <code>prompts.json</code> 的两处要按现在的代码手工对上。</li>
+              <li>补两点。一是它只记文件、不记目录链接，而这次运行的第二条配方只建了一条链接，要把链接也记上。二是加一道闸：还欠着一次准备时，观察候选的工具（行为对比、安装检查、性能测量）先拒绝，就像现在欠着基线时行为对比会拒绝一样。这样没准备的树上的对比永远不会变成证据，也不会被当成退化交给作者。</li>
+            </ol></dd>
+            <dt>涉及</dt>
+            <dd>提交 <code>8002df1b</code> 涉及的文件：<code>rewrite.py</code>、<code>job_tools/freeze.py</code>、<code>strategies/advice.py</code>、<code>strategies/controller.py</code>、<code>prompts/prompts.json</code>、<code>docs/job-tools.md</code>、<code>tests/test_prepared_candidate.py</code>。新加的闸：<code>job_tools/verify.py</code> 的 <code>_comparable</code>（56–66）。</dd>
+            <dt>要守住的</dt>
+            <dd>配方只通过现有的工具跑（它带着沙箱、网络和“配方不许改源码”的检查），在 worker 所在的机器上跑，并且每个候选只跑一次，不是每次对比都跑。配方的产物在保存后还在时不重跑。</dd>
+            <dt>测试</dt>
+            <dd>原提交自带 <code>tests/test_prepared_candidate.py</code>（162 行）。要加：只生成链接的配方也会触发；欠着准备时对比被拒绝并说明原因。</dd>
+            <dt>预期</dt>
+            <dd>主作业里省下两次白跑的完整对比和两轮 controller，约 25 分钟；草稿作业每次保存后少一次对比和一轮 controller。更重要的是，没有 agent 的作业不会再把缺扩展的失败交给作者去修。</dd>
+          </dl>
+        </div>
+      </div>
+
+      <div class="item" id="c33">
+        <div class="n">3.3</div>
+        <div class="body">
+          <div class="head"><h3>测量请求不再被每个等待中的节点拒收</h3><span class="tag">问题 7</span><span class="pill good">改动小</span></div>
+          <dl>
+            <dt>改法</dt>
+            <dd>测量请求本来就按给它的时间来做（时间不够的文件会换一批重测），所以它声明的“需要多少时间”不必是没有封顶的上界，改成一个最小可用的时间（比如上界和 30 分钟里较小的一个）。等待中的分配剩的时间够，就直接接。另外，分配拒收一个请求时不重新开始空闲计时。</dd>
+            <dt>涉及</dt>
+            <dd><code>check_executor.py:1532</code>（<code>needs_seconds</code>）；<code>check_worker.py</code>：<code>_serve_one</code>（120–127）和 <code>serve</code> 的空闲计时（168–178）；<code>performance.py:723–731</code>（给节点的时间预算）。</dd>
+            <dt>测试</dt>
+            <dd>要加：剩余时间够用的分配接下测量请求；拒收不延长空闲。</dd>
+            <dt>预期</dt>
+            <dd>每次测量少申请一个分配、少一次排队，少占一个 8 核 32 GB 的分配 15 分钟。对墙钟的影响取决于集群排队的长短，这次很小。</dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="pkg" id="pkg4">
+    <h3>包四：让代价看得见</h3>
+    <div class="panel">
+
+      <div class="item" id="c41">
+        <div class="n">4.1</div>
+        <div class="body">
+          <div class="head"><h3>提交前说出性能验收大约要多久</h3><span class="tag">问题 8</span></div>
+          <dl>
+            <dt>改法</dt>
+            <dd>提交前的冻结估计加上两个数：基准试跑的上界和一次候选测量的上界，按“要写基准文件的叶子数 × 每叶最多 3 个文件 × 每个文件的进程数 × 每次进程的预计秒数”算，并说明最多测几次（1 次加修复次数）。测试设计结束、契约写好时再发一条事件，用试跑的实测时间给出每次候选测量的预计。技能文档里让主持会话把这句话转告所有者。</dd>
+            <dt>涉及</dt>
+            <dd><code>leaf_test_design.py</code>：<code>freeze_estimate</code> 和 <code>freeze_note</code>（1531–1604）；<code>execution.py</code> 写契约之后的事件（4944–4959）；<code>skills/nanolize-run/SKILL.md</code>。</dd>
+            <dt>预期</dt>
+            <dd>所有者在按提交之前就知道 <code>performance=on</code> 在这个仓库上是多几个小时，而不是跑到第二天才知道。</dd>
+          </dl>
+        </div>
+      </div>
+
+      <div class="item" id="c42">
+        <div class="n">4.2</div>
+        <div class="body">
+          <div class="head"><h3>长的测量有进度</h3><span class="tag">问题 8</span></div>
+          <dl>
+            <dt>改法</dt>
+            <dd>用 1.3 里节点按文件写出的结果做进度：作业等请求返回时顺便数已经写出的文件数，更新这一步的进度（“基准试跑 31 / 74”“性能测量 20 / 74”）。运行页面和 <code>run-watch</code> 已经会显示步骤进度，不用加新界面。</dd>
+            <dt>涉及</dt>
+            <dd><code>check_executor.py</code> 等待请求的循环（1727–1752）；<code>leaf_test_design.py</code> 的 <code>tell</code>（551–557）；<code>job_tools/freeze.py</code> 的进度上报（<code>_telling</code>）。</dd>
+          </dl>
+        </div>
+      </div>
+
+      <div class="item" id="c43">
+        <div class="n">4.3</div>
+        <div class="body">
+          <div class="head"><h3>暂停事件说出真正的原因</h3><span class="tag">问题 8</span><span class="pill good">改动小</span></div>
+          <dl>
+            <dt>改法</dt>
+            <dd>按错误的种类分别措辞：提交没有应答、排队超过时限、分配在批次运行中结束、调度器不再应答。现在四种都说成“在所有者的排队时限内无法使用”。同时在事件里给出建议的下一步（1.1 做完之后，“提交没有应答”这一种基本不会再走到暂停）。</dd>
+            <dt>涉及</dt>
+            <dd><code>execution.py:6133–6137</code>；<code>check_executor.py</code> 里各个 <code>CheckExecutorUnavailable</code> 的子类（261–271）。</dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="pkg" id="later">
+    <h3>放第二批的三项</h3>
+    <p>这三项有收益，但要先做单独的验证，或者牵涉冻结阶段的结构，不建议和上面的一起做。</p>
+    <div class="panel scroll">
+      <table>
+        <thead><tr><th>项</th><th>想法</th><th>为什么放后面</th></tr></thead>
+        <tbody>
+          <tr><td>每棵树一个常驻进程</td><td>现在每一轮每棵树都新起一个进程，重新导入一遍依赖。改成每棵树一个进程，各轮之间不退出，轮到谁谁跑，其余的等着。一个文件的启动次数从 16 次降到 3 到 4 次</td><td>它改变了测量的做法（缓存更热、沙箱和时限的生命周期变了），要先证明判定结果不变。按登录机上量到的启动时间，上限是再省三分之一到一半；包二做完后这一段已经只有二十几分钟</td></tr>
+          <tr><td>最后合跑和封存前基线的重复</td><td>测试设计最后把接受的文件合跑一遍（52.6 分钟），紧接着封存前的基线又把它们连同原有检查跑一遍（34.1 分钟）。两者都是“按提交后的样子在原版上跑并验证”</td><td>两者保证的东西不完全一样（合跑换种子、只敲除自己的叶子；基线用默认种子、按声明敲除）。合并要改冻结阶段的步骤边界。3.1 做完后合跑约 12 分钟，剩下的重复不大</td></tr>
+          <tr><td>基线里输出检查的串行</td><td>输出检查（包括场景文件）在基线里始终在树里一个接一个地跑 3 次，因为“输出可能带着树的路径”。27 个场景文件加上所有者的输出检查，是 34 分钟基线里串行的部分</td><td>1.4 做完后，哪些输出检查带路径是已知的；不带路径的那些可以进副本。这要在 1.4 上线、看过真实数据之后再定</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+
+<section id="effect">
+  <h2>预期效果</h2>
+  <p>把这次运行的每一段按方案重新算一遍。左边是实际，右边是推算：同一份清单（64 项能力、74 个计时基准文件），检查 8 个 worker，性能测量分到 4 个节点。右边没有一个数是实测的，假设列在表后。</p>
+  <div class="panel scroll">
+    <table>
+      <thead><tr><th>段</th><th class="num">这一次（分钟）</th><th class="num">改完后（分钟）</th><th>靠哪几项</th></tr></thead>
+      <tbody>
+        <tr><td>阶段 01 和提交</td><td class="num">37.7</td><td class="num">37.7</td><td>不变</td></tr>
+        <tr><td>第一次基线</td><td class="num">9.6</td><td class="num">9.6</td><td>不变</td></tr>
+        <tr><td>测试设计：第 1 轮会话</td><td class="num">17.6</td><td class="num">17.6</td><td>不变</td></tr>
+        <tr><td>测试设计：测试试跑和基准试跑</td><td class="num">201.8</td><td class="num">约 27</td><td><a href="#c21">2.1</a> 把基准试跑从 160 降到约 100，<a href="#c22">2.2</a> 分 4 组降到约 27；<a href="#c31">3.1</a> 把测试试跑降到约 13；<a href="#c23">2.3</a> 让两者同时进行，取长的一个</td></tr>
+        <tr><td>测试设计：后续两轮和评审</td><td class="num">33.1</td><td class="num">约 30</td><td>主要是会话，中间的小规模试跑变快</td></tr>
+        <tr><td>测试设计：最后合跑</td><td class="num">52.6</td><td class="num">约 12</td><td><a href="#c31">3.1</a></td></tr>
+        <tr><td>封存前的基线</td><td class="num">34.1</td><td class="num">34.1</td><td>第一批不动</td></tr>
+        <tr><td>封存、导入草稿</td><td class="num">1.2</td><td class="num">1.2</td><td>不变</td></tr>
+        <tr><td>导入后到行为检查全部通过</td><td class="num">83.9</td><td class="num">约 59</td><td><a href="#c32">3.2</a></td></tr>
+        <tr><td>安装检查</td><td class="num">1.6</td><td class="num">1.6</td><td>不变</td></tr>
+        <tr><td>第一次性能测量</td><td class="num">89.4</td><td class="num">约 24</td><td><a href="#c22">2.2</a></td></tr>
+        <tr><td><b>没有重来时的合计</b></td><td class="num"><b>562.7</b></td><td class="num"><b>约 255</b></td><td>9.4 小时变成约 4.2 小时</td></tr>
+        <tr><td>第一对作业取消后重新提交</td><td class="num">167.3</td><td class="num">约 10</td><td><a href="#c14">1.4</a>：提交后几分钟收到事件，改清单重提</td></tr>
+        <tr><td>测试设计第一遍作废</td><td class="num">268.7</td><td class="num">0</td><td><a href="#c11">1.1</a>：对账后接着用那个已被接受的节点。即使别的原因打断，<a href="#c12">1.2</a> 让重做只剩没做完的部分</td></tr>
+        <tr><td>批处理作业到时</td><td class="num">13.8</td><td class="num">13.8</td><td>实验安排，不在方案里</td></tr>
+        <tr><td><b>同样的意外都发生时的合计</b></td><td class="num"><b>1012.5</b></td><td class="num"><b>约 280</b></td><td>16.9 小时变成约 4.7 小时</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>第一次测量之后</h3>
+  <p>性能没过就修复再测，上限是 2 次修复。每修一次，现在是“作者的时间 + 行为对比约 6 分钟 + 安装检查 1.6 分钟 + 整份测量 89 分钟”。改完后，修好的一次是“作者的时间 + 6 + 1.6 + 筛查约 5 分钟 + 整份约 24 分钟”；没修好的一次不付整份测量（<a href="#c24">2.4</a>）。两次修复都用上时，这一段从作者时间之外的约 195 分钟降到约 75 分钟以内。</p>
+
+  <h3>只做一部分时</h3>
+  <div class="panel scroll">
+    <table>
+      <thead><tr><th>做到哪里</th><th class="num">没有重来时，到第一次测量结束</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>现在</td><td class="num">9.4 小时</td><td></td></tr>
+        <tr><td>除分片之外都做（K = 1）</td><td class="num">约 6.5 小时</td><td>基准试跑约 100 分钟，测量 89 分钟</td></tr>
+        <tr><td>分到 2 个节点</td><td class="num">约 5.0 小时</td><td>基准试跑约 52 分钟，测量约 47 分钟</td></tr>
+        <tr><td>分到 4 个节点</td><td class="num">约 4.2 小时</td><td>上表</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>推算用的假设</h3>
+  <ul class="plain">
+    <li>清单和这次相同。不开性能验收的上一次是 2.9 小时，但它的清单只有这次的四成，两者不能直接比。</li>
+    <li>2.1：所有合格的基准文件都在 3 轮后结束（每个文件 16 次进程变成 10 次）。这次 585 个基准里 582 个合格，5 个放宽过允许值。</li>
+    <li>2.2：每个分配排队的时间和这次一样（半分钟左右），各组耗时配平，每组另加约 2 分钟导出三棵树。</li>
+    <li>3.1：8 个 worker 给试跑带来 5 倍加速。这是估计；副本的复制和回到树里重跑的文件会吃掉一部分。</li>
+    <li>3.2：省下的 25 分钟是分析页对主作业的估计。</li>
+    <li>没有算 PR #57 新增的范围基线和范围试跑，这次运行没有它们。</li>
+  </ul>
+</section>
+
+
+<section id="order">
+  <h2>顺序和验证</h2>
+  <p>建议分三个合并请求，按收益和风险排。第一个里的每一项都小而独立，做完就能避免这次的两次重来。</p>
+  <div class="panel scroll">
+    <table class="order">
+      <thead><tr><th></th><th>内容</th><th>为什么这样分</th></tr></thead>
+      <tbody>
+        <tr><td class="id">第一个</td><td><a href="#c11">1.1</a> 提交对账和重试、<a href="#c14">1.4</a> 基线报出带路径的输出、<a href="#c21">2.1</a> 试跑提前结束、<a href="#c32">3.2</a> 自动重新准备、<a href="#c33">3.3</a> 测量请求不被拒收、<a href="#c43">4.3</a> 暂停原因</td><td>六项互不依赖，每项只动一两个函数。3.2 是把写过的修复带回来。做完后：这次重来的 450 分钟里，除了批处理作业到时的 14 分钟和改清单重提的约 10 分钟，其余都不会再发生；基准试跑少 37%</td></tr>
+        <tr><td class="id">第二个</td><td><a href="#c13">1.3</a> 按文件落盘、<a href="#c22">2.2</a> 分片、<a href="#c23">2.3</a> 两种试跑并行、<a href="#c24">2.4</a> 修复后先筛查、<a href="#c41">4.1</a> 提交前的估计、<a href="#c42">4.2</a> 进度</td><td>都围绕“测量怎么发给节点”。1.3 是 2.2 和 4.2 的基础；2.3 要用 2.2 给执行器加的并发</td></tr>
+        <tr><td class="id">第三个</td><td><a href="#c31">3.1</a> 设计文件试跑进副本、<a href="#c12">1.2</a> 测试设计可接着做（先会话结果，后试跑结果）</td><td>都在冻结阶段的测试设计里，改动面最大，放在最后单独评审</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>怎么验证</h3>
+  <ol class="plain">
+    <li><b>单元测试。</b>每一项在<a href="#plan">方案</a>里列了要改和要加的测试。调度器相关的用仓库里已有的替身调度器。固定策略的对照基准测试（<code>tests/test_fixed_parity</code>）在 CI 里不比较，要在录制它的机器上单独跑一遍，确认这些修改没有改动固定策略的步骤。</li>
+    <li><b>小仓库上的端到端。</b>用 python-dotenv 这样的小仓库，开 <code>performance=on pair=on parallel=on</code>，检查在计算节点上跑，逐项制造这次遇到的情况：
+      <ul class="plain">
+        <li>把 <code>sbatch</code> 包一层，让其中一次 40 秒后才返回：作业不暂停，接着用那个被接受的节点（1.1）。</li>
+        <li>清单里放一条把当前目录写到 stderr 的输出检查：提交后几分钟内收到事件（1.4）。</li>
+        <li>配方生成一个被 Git 忽略的文件和一条链接：保存候选后的第一次对比没有假失败，操作记录里有一次自动的准备（3.2）。</li>
+        <li>测量进行到一半时结束那个分配：重试只测剩下的文件（1.3）。测试设计进行到一半时结束 worker：恢复后已完成的会话和试跑不再跑（1.2）。</li>
+        <li>操作记录和节点请求记录里核对：基准文件 3 轮结束的个数（2.1），分片的个数和每片的文件（2.2），两种试跑的起止时间重叠（2.3）。</li>
+      </ul></li>
+    <li><b>分片前后判定一致。</b>对同一个候选，用 K = 1 和 K = 4 各测一次，逐个基准比较结论。允许不同的只有噪声边界上的基准，数出来写进记录。3.1 同样：1 个 worker 和 8 个 worker 接受、拒绝的文件集合要相同。</li>
+    <li><b>detectron2 core 重跑。</b>用这次运行的同一份功能图和清单（不让主持会话重做阶段 01），在改完的分支上跑一次，和上面的推算逐段对照。清单固定之后，差别才能归到代码上。</li>
+  </ol>
+  <p>要同步更新的文字：<code>docs/graph-rewrite.md</code> 里性能基准的一节（“一批、一台机器”的说法，提前结束的条件）和计算节点的一节，<code>docs/job-tools.md</code>（<code>compare_performance</code> 的参数、<code>prepare_environment</code> 的自动调用），<code>skills/nanolize-run/SKILL.md</code>（暂停后怎么办、提交前的估计），controller 的指南。提示文字改了之后要重新生成 <code>docs/prompts.md</code> 和 <code>tests/prompt_views.json</code>。</p>
+</section>
+
+
+<section id="open">
+  <h2>需要你决定的</h2>
+  <p>下面六件事我给了建议，但它们改变的是资源的用法或验收的含义，应该由你定。</p>
+  <div class="panel scroll">
+    <table>
+      <thead><tr><th></th><th>问题</th><th>我的建议</th><th>另外的选择</th></tr></thead>
+      <tbody>
+        <tr><td class="id">1</td><td>性能测量同时用几个节点（<a href="#c22">2.2</a> 的 K）</td><td>检查在计算节点上跑时默认 4，所有者可以设 1 到 8；在本机跑时固定 1。总核时不变，但会同时占 4 个分配</td><td>默认 1，由技能或所有者显式打开。更保守，默认情况下仍是 6.5 小时</td></tr>
+        <tr><td class="id">2</td><td>性能修复后的筛查算不算数（<a href="#c24">2.4</a>）</td><td>筛查只决定要不要付整份测量；候选是否通过仍然由整份测量决定</td><td>筛查通过、且修复只动了那几个叶子自己的文件时，沿用上一个候选其余基准的结果，不再整份测。更快，但“每份新代码都有自己的测量”这条就不成立了</td></tr>
+        <tr><td class="id">3</td><td>输出随路径变化的检查怎么处理（<a href="#c14">1.4</a>）</td><td>基线报问题、发事件，对比时判“未验证”。不改摘要的算法</td><td>封存前直接拒绝，要求改清单；或者在算摘要之前把工作树路径换成占位符（这类检查就能直接通过，但所有输出摘要都变，已保存的基线和校验包要重录）</td></tr>
+        <tr><td class="id">4</td><td>测试设计可接着做，做到哪一步（<a href="#c12">1.2</a>）</td><td>先做会话结果复用，再做试跑结果复用。1.1 已经堵住这次的起因，1.2 防的是别的打断</td><td>只做会话结果复用（省模型花费，不省试跑时间）；或者不做，接受长步骤被打断要重来</td></tr>
+        <tr><td class="id">5</td><td>重新准备环境按什么触发（<a href="#c32">3.2</a>）</td><td>按原提交的做法：配方的产物不在了才重跑。另外，<code>fix-parallel-main</code> 上还有两个同样没进 main 的提交（封存前的基线不可用时当场说出来；并行模式下由主作业的 agent 决定导入是否等草稿作业的修复），建议一起看一遍要不要带回</td><td>每次保存后都重跑。能覆盖“产物还在但依赖源码”的情况（比如构建目录），代价是每次保存都跑一遍配方，恢复旧候选时旧证据不能复用</td></tr>
+        <tr><td class="id">6</td><td>一个合并请求还是三个</td><td>三个，按<a href="#order">上面的顺序</a>。第一个可以很快合入</td><td>一个。评审一次，但最大的两项（1.2、3.1）会拖住小的修复</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+
+<section id="limits">
+  <h2>依据和口径</h2>
+  <ul class="plain">
+    <li><b>依据。</b>这次运行的逐步轨迹（到 2026-11-22 22:18 PST，运行还没有结束），跑这次实验的 agent 写的分析页《开了性能验收，detectron2 为什么慢了这么多》（到 22:41 PST），以及 nanolize main @ cd7fd735 的源码。时间账里的数字取自这两份材料；分析页已经确认的两个流程问题（这里的问题 1 和 6）和两个设计上的弱点（问题 3 的串行、问题 2），我对照最新的代码重新读了一遍，结论一致，并补上了代码位置。问题 2 里“基线已经看到”、问题 3 里“提前结束永远不触发”、问题 5、问题 7 和问题 6 里“修复在另一个分支上”是这一页新增的。</li>
+    <li><b>运行自己的记录我没有拿到。</b>作业目录不在我能读的地方，所以凡是要看作业记录才能确定的地方都标了“推断”：那次按名字的取消为什么没取消掉已被接受的节点；被取消的那对作业的基线里，两条检查是不是没被标成可并行；34 分钟的封存前基线内部怎么分。</li>
+    <li><b>运行没有结束。</b>第一次性能测量之后的性能修复、第二次测量和交付不在这一页的数字里。</li>
+    <li><b>两次运行各只有一遍，清单不同。</b>“共有的工作”变长主要来自清单变大，这一页没有把它算作性能验收的代价，也没有把它算作可以省下的时间。</li>
+    <li><b>“预期”都是推算。</b>没有改代码，也没有做任何探针实验。其中最不确定的是 3.1 的加速倍数和分片后各节点的排队时间。</li>
+    <li><b>启动时间是在另一台机器上量的。</b>2.8 秒和 6.3 秒是在登录机上、用较早一次 detectron2 运行留下的测试环境量的，依赖相同，但不是这次运行的环境，也不是计算节点。它只用来说明量级：一次约 8 秒的进程里，启动占了相当一部分。</li>
+    <li><b>最新 main 和这次运行用的提交之间差一个 PR #57。</b>这一页涉及的文件里，<code>check_executor.py</code>、<code>check_worker.py</code>、<code>verification.py</code>、<code>performance.py</code>、<code>benchmark_runner.py</code>、<code>leaf_test_validity.py</code>、<code>rewrite.py</code>、<code>pair.py</code>、<code>job_tools/authoring.py</code>、<code>strategies/advice.py</code> 没有改动。<code>execution.py</code>、<code>leaf_test_design.py</code>、<code>job_tools/freeze.py</code> 有改动（新增范围基线和范围试跑），和这里的八个问题无关，但会让冻结阶段更长。这部分只读了代码，没有跑过。</li>
+    <li><b>行号。</b>都是 main @ cd7fd735 的；代码再动之后以函数名为准。</li>
+  </ul>
+</section>
+
+<footer>
+  <p>nanolize 性能验收提速方案 · 依据 detectron2 core 的一次运行（main @ a003430d）和 main @ cd7fd735 的代码 · 2026-11-23 · 只有方案，没有改代码</p>
+  <p>这一页没有写本机的路径、账户、队列、节点名和调度器作业编号。</p>
+</footer>
+
+
+</div>
+</body>
+</html>

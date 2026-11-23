@@ -164,20 +164,24 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
 .item dd table td:first-child { min-width: 7em; }
 @media (max-width: 720px) { #friend .scroll table { min-width: 980px; } .item dd .scroll table { min-width: 560px; } }
 
+#unmerged td:nth-child(n+2) { min-width: 11em; }
+#unmerged td:nth-child(2), #unmerged td:nth-child(6) { min-width: 17em; }
+@media (max-width: 720px) { #unmerged .scroll table { min-width: 1080px; } }
+
 </style>
 </head>
 <body>
 <div class="page">
 
 <header>
-  <div class="eyebrow">nanolize 性能验收 · 问题整理和修改方案 · 第二版 · 依据：detectron2 core 的一次完整运行（main @ a003430d）和最新 main @ cd7fd735 的代码 · 2026-11-23</div>
+  <div class="eyebrow">nanolize 性能验收 · 问题整理和修改方案 · 第三版 · 依据：detectron2 core 的一次完整运行（main @ a003430d）和最新 main @ cd7fd735 的代码 · 2026-11-23</div>
   <h1>开了性能验收，detectron2 从 2.9 小时变成 20.2 小时：时间花在哪，怎么改</h1>
   <p class="lede">同一个仓库、同样的选项，只多开了性能验收（<code>performance=on</code>），一次运行从 2.9 小时变成 20.2 小时。这一页结合这次运行的完整轨迹、跑这次实验的 agent 写的分析页、另一份 tqdm 上的实测，以及最新 main 的代码，回答四件事：多出来的时间是什么，哪些是性能验收带来的、哪些本来就有，问题出在代码的哪里，按什么方案改、改完大约剩多少。这里只有方案，没有改任何代码。</p>
   <div class="meta">
     <span><b>运行</b> detectron2 core，pair on、parallel on、performance on，Claude Code runner（Fable 5.2，effort high），检查在计算节点上跑；结束状态 <code>completed_with_gaps</code></span>
     <span><b>代码</b> 运行用的是 main @ a003430d（PR #56 合入后）；方案对照最新的 main @ cd7fd735（PR #57 合入后，之后没有新的合并），行号都是后者的</span>
     <span><b>范围</b> 13 项修改，分五个包</span>
-    <span><b>状态</b> 方案，等确认后再动手</span>
+    <span><b>状态</b> 方案和各项决定都已定下，还没有开始改代码</span>
   </div>
 </header>
 
@@ -185,6 +189,9 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
   <div class="panel">
     <h3>这一版改了什么</h3>
     <ul class="plain">
+      <li><b>第三版：七件待定的事都已定下，写进了各项的改法里。</b>没有性能声明就不做性能验收；逐个模型列速度的表格不算声明；上限 20 个计时基准；“每个叶子都测”留成显式选项；带路径的输出检查判“未验证”、不改摘要算法；环境按“配方的产物不见了”重新准备；测试设计被打断后只复用会话结果。全部决定列在<a href="#open">已经定下的</a>。</li>
+      <li><b>第三版：看了 <code>fix-parallel-main</code> 上另外两个没进 main 的提交。</b>一个（基线不可用时当场说）并入 <a href="#c22">2.2</a>；另一个（由主作业的 agent 决定导入是否等草稿作业的修复）值得带回，但建议以后单独做。见<a href="#unmerged">那一节</a>。</li>
+      <li>以下是第二版相对第一版的改动。</li>
       <li><b>用完整的轨迹更新了数字。</b>上一版依据的轨迹只到第一次性能测量之后。运行实际在 20.2 小时结束，性能测量一共做了三次；第三次整份重测，只是因为第二次的 582 条标准里有 1 条噪声太大没有判定。</li>
       <li><b>性能验收的范围改成“只测项目自己声明的性能”。</b>这是你定的方向：README 和文档里报告过的性能，加上仓库自带的基准脚本（由 agent 自动找，不假设固定路径）；有 GPU 就用 1 块 GPU 测，测不了的不测、在报告里说明。它成了<a href="#pkg1">包一</a>，是整个方案里收益最大的一项。</li>
       <li><b>其余各项随之调整。</b>范围缩小之后，上一版里为“几百个基准”准备的 8 项提速不再需要，列在<a href="#dropped">不再需要的</a>里；剩下的都是不开性能验收也存在的问题。</li>
@@ -217,7 +224,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
     <li><b>冻结阶段有一段一直存在的串行。</b>设计出的测试文件的试跑和最后合跑，在 8 核的节点上只用 1 核。上一次这两段是 20 分钟，不显眼；这次清单大了，是 94 分钟（<a href="#p5">问题 5</a>）。</li>
     <li><b>候选环境没有重新准备的修复已经写过，但不在 main 里。</b>它在 <code>fix-parallel-main</code> 分支上，是 PR #45 合并之后才加的提交，PR #56 把 #45 带回来时没有带上它（<a href="#p6">问题 6</a>）。</li>
     <li><b>方案分五个包，13 项。</b>包一缩小性能范围，包二让重来不再发生，包三处理冻结和验证里的串行与空转，包四是测试设计流程的三项改进，包五是一个小项。见<a href="#plan">修改方案</a>；先后和验证办法见<a href="#order">顺序和验证</a>。</li>
-    <li><b>还有 7 件事需要你定</b>，见<a href="#open">需要你决定的</a>。你已经定下的四件事也记在那里。</li>
+    <li><b>各项决定都已定下</b>，共 11 条，见<a href="#open">已经定下的</a>。剩下两点是我看过另外两个提交之后的建议，等你确认。</li>
   </ul>
 </section>
 
@@ -545,7 +552,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
             <dt>改法</dt>
             <dd><ol class="plain">
               <li><b>一个只读的查找工具。</b>在仓库里按内容和名字找候选，不假设任何固定路径：README 和文档里谈性能的句子（速度、吞吐、延迟、开销、“快 x 倍”、带单位的数字）；名字或路径里带 bench、benchmark、perf、profile、speed、timing 的文件和目录；<code>asv.conf.json</code>、pytest-benchmark 的用法、<code>timeit</code>；测试文件里的 <code>benchmark_*</code> 函数；CI 配置里跑基准的步骤。每个候选给出路径、行号和命中的原因。它不执行仓库里的任何代码。</li>
-              <li><b>主持会话读候选，写成“性能声明”列表。</b>它可以自己再找，但每一条必须带出处。每条有：出处（文件、行、原句）、测的是什么、项目自己怎么跑（命令或函数）、落在哪个能力上、用 CPU 还是 GPU、项目声明用了几块 GPU。列表随 <code>performance</code> 设置交给评审服务。</li>
+              <li><b>主持会话读候选，写成“性能声明”列表。</b>它可以自己再找，但每一条必须带出处。只收两类：README 和文档里对性能的主张，以及项目自带的基准脚本覆盖的任务。逐个模型列速度的表格（比如 detectron2 的 Model Zoo）不逐行算作声明。每条有：出处（文件、行、原句）、测的是什么、项目自己怎么跑（命令或函数）、落在哪个能力上、用 CPU 还是 GPU、项目声明用了几块 GPU。列表随 <code>performance</code> 设置交给评审服务。</li>
               <li><b>选择页显示这份列表</b>，连同按条数估出的测量时间，所有者可以增删。无人值守时以主持会话的列表为准，并写进交付结果。</li>
               <li><b>列表为空</b>时，作业不设计任何基准，见 <a href="#c14">1.4</a>。</li>
             </ol>
@@ -553,7 +560,7 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
             <div class="scroll"><table>
               <thead><tr><th>仓库</th><th>声明在哪</th><th>项目自己怎么测</th></tr></thead>
               <tbody>
-                <tr><td>detectron2</td><td>README 一句“trains much faster”，指向文档里的基准页（R-50-FPN Mask R-CNN 的训练吞吐，8 块 GPU）；MODEL_ZOO 里每个模型的训练时间和推理时间</td><td><code>tools/benchmark.py</code>，四个任务：训练、推理、数据加载、数据加载的分解；三个测试文件里手动运行的 <code>benchmark_*</code> 函数</td></tr>
+                <tr><td>detectron2</td><td>README 一句“trains much faster”，指向文档里的基准页（R-50-FPN Mask R-CNN 的训练吞吐，8 块 GPU）；MODEL_ZOO 里 65 个模型的训练时间和推理时间是表格，不逐行算作声明</td><td><code>tools/benchmark.py</code>，四个任务：训练、推理、数据加载、数据加载的分解；三个测试文件里手动运行的 <code>benchmark_*</code> 函数</td></tr>
                 <tr><td>tqdm</td><td>README：每次迭代的开销约 60ns，“有单元测试防止性能退化”</td><td><code>tests/tests_perf.py</code>（和手写循环比开销）；<code>benchmarks/benchmarks.py</code> 加 <code>asv.conf.json</code></td></tr>
               </tbody>
             </table></div></dd>
@@ -579,7 +586,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
               <li>写基准的对象从“每个有自己源码的叶子”改成“每条声明落在的能力”。没有声明的叶子不再有只为性能而开的设计会话。</li>
               <li>设计者的提示改掉：给它声明的原句和项目自己的基准脚本的位置，要求基准做项目自己测的那件事，缩到能在限制内跑完的规模（单次调用的时间上限、无网络、固定种子）。不再要求“时间花在这个叶子自己的函数里”。</li>
               <li>计数文件默认不写，除非声明本身说的是次数或复杂度。</li>
-              <li>加一个总量上限：一个作业最多 N 个计时基准（设置里可改）。</li>
+              <li>加一个总量上限：一个作业最多 20 个计时基准，设置里可改。</li>
+              <li>现在的“每个有自己源码的叶子都测”留成一个要显式打开的选项，默认不用。</li>
               <li>“是不是验收标准”的试跑规则不变：把基准所在能力的函数减慢一倍，基准必须跟着变慢。声明落在调用路径顶端的能力上（训练循环、模型、数据加载），减慢按“含被调用者”计算，所以端到端的基准能通过这一关。</li>
             </ol></dd>
             <dt>涉及</dt>
@@ -692,15 +700,15 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
             <dd><ol class="plain">
               <li>基线在副本里重跑输出检查时（这一步已经在做），如果退出码和用例都相同、只有输出摘要不同，就在结果上标出来，并用现有的“第一处不同”函数指出是哪个流、是不是只差在路径或地址上。</li>
               <li>把它记成基线的一个问题，和现有的“原版两次输出不同”同一类：这条检查的输出不能当作候选的标准，对比时判成“未验证”而不是“退化”，不会再让作者去修一个修不了的东西。</li>
-              <li>基线结束时发一条事件，点名这些检查和原因。成对作业的草稿作业在提交后几分钟就做完基线，主持会话几分钟内就能看到。</li>
+              <li>把 <code>fix-parallel-main</code> 上的提交 <code>c20cfa67</code> 带回来：封存之前的基线只要不能当标准，这次捕获一结束就发事件，不等到封存。现在只有封存的事件才说，而主作业的封存在整个冻结阶段之后。在它的基础上让事件点名问题的种类和涉及的检查，不只给一个数。这次两个草稿作业在提交后 5 分钟和 3 分钟封存时，都说了“原版基线不能作为标准（1 个问题）”，包括清单修好之后的那一个；一句不点名的话没有引起任何注意。</li>
               <li>只有一个检查 worker 时，现在不做副本里的那次运行；改成对每条通过的输出检查补一次（一份树的副本、每条检查一次运行）。</li>
             </ol></dd>
             <dt>涉及</dt>
-            <dd><code>verification.py</code>：<code>_run_checks_here</code> 末尾（1553–1561）、基线问题的汇总（2486–2504）、<code>compare_result</code>（1078–1087）；<code>assertion_feedback.first_difference</code>（496–530，已经能分辨“只差在被遮掉的部分”）；<code>job_tools/freeze.py</code> 发事件处（894–913）。</dd>
+            <dd><code>verification.py</code>：<code>_run_checks_here</code> 末尾（1553–1561）、基线问题的汇总（2486–2504）、<code>compare_result</code>（1078–1087）；<code>assertion_feedback.first_difference</code>（496–530，已经能分辨“只差在被遮掉的部分”）；<code>job_tools/freeze.py</code> 发事件处（894–913）和封存时说基线不可用的那一句（1765–1774）。</dd>
             <dt>要守住的</dt>
-            <dd>不改任何摘要的算法，已保存的基线和校验包照常可比。另一个办法是在算摘要前把工作树路径换成占位符（场景检查的 runner 就是这样做的），那样这类检查直接就能通过，但所有输出摘要都会变；要不要这样做见<a href="#open">需要你决定的</a>。</dd>
+            <dd>不改任何摘要的算法，已保存的基线和校验包照常可比。提交 <code>c20cfa67</code> 一共 3 个文件、增 34 行减 4 行：文档和测试能直接应用，<code>job_tools/freeze.py</code> 的一处因为 PR #57 改了同一个函数，要手工对上。</dd>
             <dt>测试</dt>
-            <dd>要加：一条把当前目录打印到 stderr 的输出检查，基线报出这个问题并发事件；候选对比判“未验证”；单 worker 时同样报出。</dd>
+            <dd>要加：一条把当前目录打印到 stderr 的输出检查，基线报出这个问题并发事件；候选对比判“未验证”；单 worker 时同样报出；封存之前不可用的基线当场发事件，事件里有问题的种类（提交自带的用例在 <code>tests/test_flexible_results.py</code>）。</dd>
             <dt>预期</dt>
             <dd>这次的 167 分钟和 $287 变成提交后约 5 分钟的一条事件。主持会话仍然要改清单重新提交，但不会先白跑两个多小时。</dd>
           </dl>
@@ -710,25 +718,22 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
       <div class="item" id="c23">
         <div class="n">2.3</div>
         <div class="body">
-          <div class="head"><h3>测试设计被打断后接着做，不从头来</h3><span class="tag">问题 1</span><span class="pill warn">改动最大的一项</span></div>
+          <div class="head"><h3>测试设计被打断后，已经完成的会话不再重跑</h3><span class="tag">问题 1</span></div>
           <dl>
             <dt>改法</dt>
-            <dd><p>测试设计的控制流只取决于四种耗时调用的结果：设计者和评审者的会话、测试试跑、基准试跑、范围试跑。做法是“重放”：重做时仍然从头执行这个函数，但每到一处耗时调用，先看上一遍留下的结果，输入完全相同就直接取用，不同就照常执行。这样不需要把函数内部的二十多个状态变量存盘。</p>
+            <dd><p>重做一次没做完的测试设计时，仍然从头执行这一步，但每到一个设计者或评审者的会话，先看上一遍留下的结果：输入完全相同就直接取用，不同就照常执行。第一遍的会话目录本来就留在磁盘上，现在只是没人读。</p>
             <ol class="plain">
-              <li><b>会话结果</b>：按“角色、提示全文（去掉随时钟变的会话时限）、schema、放进工作区的文件、所在树的内容、runner 配置、nanolize 版本”算一个摘要。上一遍同摘要的会话已经结束的，取它的答案和它工作区里写的文件。第一遍的会话目录本来就留在磁盘上，现在只是没人读。</li>
-              <li><b>测试试跑结果</b>：按“树的内容（含这一轮的文件）、试跑清单、选择、策略”再加基线指纹已经在量的东西（解释器、已装的包、原生二进制、节点种类）算摘要。</li>
-              <li><b>基准试跑结果</b>：范围缩小之后只有几个文件，整次试跑的结果按“文件内容、检查、函数、所在能力的源码、性能设置、节点种类”存一份即可。</li>
-              <li>重做一次没做完的调用时沿用它的标识。检查名里带着调用的标识，标识一变，试跑清单的摘要就对不上。</li>
-            </ol>
-            <p>可以分两步交付：先做会话结果（省下大部分模型花费，风险最小），再做试跑结果。</p></dd>
+              <li>会话按“角色、提示全文（去掉随时钟变的会话时限）、schema、放进工作区的文件、所在树的内容、runner 配置、nanolize 版本”算一个摘要。上一遍同摘要的会话已经结束的，取它的答案和它工作区里写的文件，放进这一遍的会话目录。</li>
+              <li>试跑的结果不复用，重做时照常再跑。包一和 3.1 做完之后，试跑和合跑加起来只有半小时左右。</li>
+            </ol></dd>
             <dt>涉及</dt>
-            <dd><code>leaf_test_design.py</code>：<code>_run</code>（2189–2197）、<code>_trial</code> 和 <code>_captured</code>（1701–1798）、<code>_timed</code>（1960–2001）、<code>design_tests</code> 里调用它们的几处（748–756、925、934、1003、1142）；<code>execution.py</code>：<code>_design_place</code>（5509–5522）、<code>_freeze_designed_tests</code> 的开头（4838、4876–4900）；<code>effort_runner.py</code> 的“运行目录必须是新的空目录”规则（651–653）。</dd>
+            <dd><code>leaf_test_design.py</code>：<code>_run</code>（2189–2197）和 <code>design_tests</code> 里发起会话的几处（748–756、1003）；<code>execution.py</code>：<code>_freeze_designed_tests</code> 的开头（4838、4876–4900），要让新的一遍知道上一遍的目录；<code>effort_runner.py</code> 的“运行目录必须是新的空目录”规则（651–653）。</dd>
             <dt>要守住的</dt>
-            <dd>只取输入完全相同的片段，宁可多做不可错用。随时钟变化的分支（轮次的截止时间）重放时可能走到别的路上，那时照常执行即可。原版的提交、计划的摘要、校验策略、目标叶子任何一项变了，整遍都不复用。</dd>
+            <dd>只取输入完全相同的会话，宁可多做不可错用。原版的提交、计划的摘要、校验策略、目标叶子任何一项变了，整遍都不复用。重做仍然在新的调用目录里进行，和现在一样。</dd>
             <dt>测试</dt>
-            <dd>要改：<code>tests/test_check_executor_requests.py</code> 里断言重做时出现 <code>design/call-2</code> 的用例（1072 附近）、<code>tests/test_flexible_freeze.py</code>（112 附近）。要加：在每一种耗时调用之后打断，恢复后断言已完成的会话和试跑没有再跑、最终接受的文件和不打断时相同。</dd>
+            <dd>要加：在一轮会话之后打断，恢复后断言已完成的会话没有再跑、最终接受的文件和不打断时相同；输入变了的会话照常重跑。</dd>
             <dt>预期</dt>
-            <dd>这次那样的打断发生在最后一步：重做只需要再跑最后的合跑，而不是全部 305 分钟；模型花费接近 0，而不是 $251。所有者主动暂停、worker 被结束、节点中途失效时同样适用。包一和 3.1 做完之后这一步本身会短到一个多小时，被打断的损失小得多，所以这一项排在最后，并且可以只做第一步（会话结果）。</dd>
+            <dd>这次那样的打断，重做时模型花费接近 0，而不是 $251；会话占的时间（第 1 轮 17.6 分钟，后续两轮和评审里的大部分）也省下。所有者主动暂停、worker 被结束、节点中途失效时同样适用。这一项排在最后：2.1 已经堵住这次的起因，它防的是别的打断。</dd>
           </dl>
         </div>
       </div>
@@ -869,6 +874,49 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
     </div>
   </div>
 
+  <div class="pkg" id="unmerged">
+    <h3><code>fix-parallel-main</code> 上另外两个没进 main 的提交</h3>
+    <p>这个分支在 PR #45 合并之后又加了三个提交，PR #56 把 #45 带回 main 时都没有带上。第一个是 <a href="#c32">3.2</a> 要带回的修复。另外两个我读了提交的内容，并逐个文件试了它们在最新 main 上能不能直接应用。</p>
+    <div class="panel">
+      <div class="item" id="u1">
+        <div class="n">甲</div>
+        <div class="body">
+          <div class="head"><h3><code>c20cfa67</code>：封存之前的基线不可用时，当场说出来</h3><span class="pill good">带回，并入 2.2</span></div>
+          <dl>
+            <dt>它解决什么</dt>
+            <dd>封存之前的基线不能当标准时，捕获一结束就发事件；现在只有封存的事件才说。它的说明里记着一次早先的 detectron2 运行：主作业第一次基线在提交后 11 分钟就知道了，封存在 58 分钟后才说，那一对作业随后被取消重提，白花 63 分钟和 $126。</dd>
+            <dt>最新 main</dt>
+            <dd>问题还在：只有封存的事件才说（<code>job_tools/freeze.py:1765–1774</code>）。</dd>
+            <dt>这次运行里</dt>
+            <dd>主作业的基线是可用的，没有触发。两个草稿作业封存时都说了“1 个问题”，没有点名。</dd>
+            <dt>能否直接应用</dt>
+            <dd>3 个文件，增 34 行减 4 行。文档和测试能直接应用；<code>freeze.py</code> 的一处因为 PR #57 改了同一个函数，要手工对上，约 20 行。</dd>
+            <dt>结论</dt>
+            <dd>带回，并入 <a href="#c22">2.2</a>。它和 2.2 是一件事的两半：2.2 让带路径的检查成为基线的问题，它让问题当场说出来。</dd>
+          </dl>
+        </div>
+      </div>
+      <div class="item" id="u2">
+        <div class="n">乙</div>
+        <div class="body">
+          <div class="head"><h3><code>b19c77a1</code>：由主作业的 agent 决定导入是否等草稿作业的修复</h3><span class="pill warn">值得带回，以后单独做</span></div>
+          <dl>
+            <dt>它解决什么</dt>
+            <dd>并行模式下，主作业封存时如果草稿作业正在做一次修复，由主作业的 agent 决定是等它修完，还是停掉草稿作业、直接拿它上一个候选。现在一律等。它的说明里记着同一次早先的运行：主作业封存时草稿作业的修复刚开始 2 分钟，等了 24.7 分钟。</dd>
+            <dt>最新 main</dt>
+            <dd>问题还在：导入一律等待（<code>job_tools/pair.py:319</code> 起的 <code>import_draft</code>）。</dd>
+            <dt>这次运行里</dt>
+            <dd>没有触发。这次冻结用了 10 个小时，草稿早就写完，导入只等了半分钟。上一次不开性能验收时主作业封存后等了 46 分钟；其中多少是在等修复、多少是在等第一版写完，我没有数据。</dd>
+            <dt>能否直接应用</dt>
+            <dd>8 个文件，增 459 行减 26 行。源码的四处（<code>pair.py</code>、<code>advice.py</code>、<code>controller.py</code>、提示）在最新 main 上都不能直接应用，要重新移植。</dd>
+            <dt>结论</dt>
+            <dd>值得带回，但不放进这三个合并请求。方案做完之后冻结阶段会短到两小时左右，和草稿作业写完第一版的时间（这次 110 分钟）接近，这种等待会重新出现。建议在改完后的 detectron2 重跑里量一下主作业封存后等了草稿作业的修复多久，超过几分钟就单独移植。</dd>
+          </dl>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div class="pkg" id="dropped">
     <h3>因为范围缩小而不再需要的</h3>
     <p>上一版有 8 项是为“几百个基准、每次测量一个多小时”准备的。范围缩小之后它们解决的问题不存在了，从方案里拿掉。</p>
@@ -964,9 +1012,9 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
     <table class="order">
       <thead><tr><th></th><th>内容</th><th>为什么这样分</th></tr></thead>
       <tbody>
-        <tr><td class="id">第一个</td><td><a href="#c21">2.1</a> 提交对账和重试、<a href="#c22">2.2</a> 基线报出带路径的输出、<a href="#c32">3.2</a> 自动重新准备环境、<a href="#c51">5.1</a> 暂停原因</td><td>四项都和性能验收无关，互不依赖，每项只动一两个函数；3.2 是把写过的修复带回来。做完后：这次重来的 450 分钟里，除了批处理作业到时的 14 分钟和改清单重提的约 10 分钟，其余都不会再发生</td></tr>
+        <tr><td class="id">第一个</td><td><a href="#c21">2.1</a> 提交对账和重试、<a href="#c22">2.2</a> 基线报出带路径的输出（含带回提交 <code>c20cfa67</code>）、<a href="#c32">3.2</a> 自动重新准备环境、<a href="#c51">5.1</a> 暂停原因</td><td>四项都和性能验收无关，互不依赖，每项只动一两个函数；3.2 和 2.2 的一部分是把写过的提交带回来。做完后：这次重来的 450 分钟里，除了批处理作业到时的 14 分钟和改清单重提的约 10 分钟，其余都不会再发生</td></tr>
         <tr><td class="id">第二个</td><td><a href="#c11">1.1</a> 性能声明列表、<a href="#c12">1.2</a> 只为声明写基准、<a href="#c14">1.4</a> 结果和报告里的说明；随后是 <a href="#c13">1.3</a> 用 GPU 测</td><td>性能范围的全部改动。1.3 要动执行器，并且要在真有 GPU 的分区上验证，所以放在这个包的第二步。前三项做完，性能验收专有的时间就从 447 分钟降到十几分钟</td></tr>
-        <tr><td class="id">第三个</td><td><a href="#c31">3.1</a> 设计文件试跑进副本、<a href="#c41">4.1</a> 返工保留上一稿、<a href="#c42">4.2</a> 共享文件的敲除、<a href="#c43">4.3</a> 模拟时钟扫描、<a href="#c23">2.3</a> 测试设计可接着做</td><td>都在测试设计这一步里，改动面最大，放在最后单独评审。2.3 排在最末</td></tr>
+        <tr><td class="id">第三个</td><td><a href="#c31">3.1</a> 设计文件试跑进副本、<a href="#c41">4.1</a> 返工保留上一稿、<a href="#c42">4.2</a> 共享文件的敲除、<a href="#c43">4.3</a> 模拟时钟扫描、<a href="#c23">2.3</a> 已完成的会话不再重跑</td><td>都在测试设计这一步里，改动面最大，放在最后单独评审。2.3 排在最末</td></tr>
       </tbody>
     </table>
   </div>
@@ -981,39 +1029,43 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
         <li>把 <code>sbatch</code> 包一层，让其中一次 40 秒后才返回：作业不暂停，接着用那个被接受的节点（2.1）。</li>
         <li>清单里放一条把当前目录写到 stderr 的输出检查：提交后几分钟内收到事件（2.2）。</li>
         <li>配方生成一个被 Git 忽略的文件和一条链接：保存候选后的第一次对比没有假失败，操作记录里有一次自动的准备（3.2）。</li>
-        <li>测试设计进行到一半时结束 worker：恢复后已完成的会话不再跑（2.3）。</li>
+        <li>测试设计进行到一半时结束 worker：恢复后已完成的会话不再跑，试跑照常再跑（2.3）。</li>
+        <li>让封存之前的基线带一个问题：捕获一结束就有事件，事件里点名问题的种类（2.2）。</li>
       </ul></li>
     <li><b>并行前后去留一致。</b>3.1：1 个 worker 和 8 个 worker 接受、拒绝的设计文件集合要相同。</li>
     <li><b>detectron2 core 重跑。</b>用这次运行的同一份功能图和清单（不让主持会话重做阶段 01），在改完的分支上跑一次，和上面的推算逐段对照。清单固定之后，差别才能归到代码上。</li>
   </ol>
+  <p>提交 <code>b19c77a1</code>（由主作业的 agent 决定导入是否等草稿作业的修复）不在这三个合并请求里。在最后的 detectron2 重跑里顺便量一下主作业封存后等了草稿作业的修复多久，再决定要不要单独移植，见<a href="#unmerged">那一节</a>。</p>
   <p>要同步更新的文字：<code>docs/graph-rewrite.md</code> 里性能基准的一节（范围、GPU、“不计 GPU 的时间”那一段）和计算节点的一节，<code>docs/job-tools.md</code>（新的查找工具、<code>prepare_environment</code> 的自动调用），两个技能文档（<code>performance=</code> 的含义、阶段 01 里整理性能声明、选分区时找 GPU 分区、暂停后怎么办），设计者和 controller 的提示。提示文字改了之后要重新生成 <code>docs/prompts.md</code> 和 <code>tests/prompt_views.json</code>。</p>
 </section>
 
 
 <section id="open">
-  <h2>需要你决定的</h2>
-  <h3>已经定下的</h3>
-  <ul class="plain">
-    <li>性能范围只取项目自己声明的：README 和文档里报告过的性能，加上仓库自带的基准脚本。</li>
-    <li>基准脚本由 agent 自动找，不假设固定的文件名或路径。</li>
-    <li>调度器上有 GPU 就可以测，每个基准只用 1 块，不照项目声明的块数；1 块测不了就不测，在报告里说明。</li>
-    <li>不加“用行为检查的耗时做粗筛”的兜底；也不做“用端到端负载代替逐叶子基准”和“按耗时占比选叶子”这两个另外的办法。</li>
-  </ul>
-  <h3>还需要你定的</h3>
+  <h2>已经定下的</h2>
+  <p>下面 11 条都是你定的，已经写进各项的改法里。</p>
   <div class="panel scroll">
     <table>
-      <thead><tr><th></th><th>问题</th><th>我的建议</th><th>另外的选择</th></tr></thead>
+      <thead><tr><th></th><th>决定</th><th>写在哪</th></tr></thead>
       <tbody>
-        <tr><td class="id">1</td><td>项目没有任何性能声明时怎么办（<a href="#c14">1.4</a>）</td><td>不做性能验收，结果写“项目没有声明性能”</td><td>退回现在的做法，给每个叶子写基准</td></tr>
-        <tr><td class="id">2</td><td>“表格里每个模型的速度”算不算声明（<a href="#c11">1.1</a>）。detectron2 的 Model Zoo 给 65 个模型都列了训练和推理时间</td><td>不算。只取 README 的主张和自带脚本覆盖的任务，detectron2 是 5 个基准</td><td>核心范围内的每个模型族各测一次推理，约 15 个基准，试跑约 26 分钟，每次测量 12 到 20 分钟。训练一步在随机权重下不是每个模型都跑得通</td></tr>
-        <tr><td class="id">3</td><td>总量上限定多少（<a href="#c12">1.2</a>）</td><td>一个作业最多 20 个计时基准，设置里可改</td><td>更小（比如 10），或者不设上限、完全由列表决定</td></tr>
-        <tr><td class="id">4</td><td>现在的“每个叶子都测”要不要留着</td><td>留成一个要显式打开的选项，默认不用。代码是现成的，小仓库上可能有人想要</td><td>删掉，只留新范围。代码和文档都更简单</td></tr>
-        <tr><td class="id">5</td><td>输出随路径变化的检查怎么处理（<a href="#c22">2.2</a>）</td><td>基线报问题、发事件，对比时判“未验证”。不改摘要的算法</td><td>封存前直接拒绝，要求改清单；或者在算摘要之前把工作树路径换成占位符（这类检查就能直接通过，但所有输出摘要都变，已保存的基线和校验包要重录）</td></tr>
-        <tr><td class="id">6</td><td>重新准备环境按什么触发（<a href="#c32">3.2</a>）</td><td>按原提交的做法：配方的产物不在了才重跑。另外，<code>fix-parallel-main</code> 上还有两个同样没进 main 的提交（封存前的基线不可用时当场说出来；并行模式下由主作业的 agent 决定导入是否等草稿作业的修复），建议一起看一遍要不要带回</td><td>每次保存后都重跑。能覆盖“产物还在但依赖源码”的情况（比如构建目录），代价是每次保存都跑一遍配方，恢复旧候选时旧证据不能复用</td></tr>
-        <tr><td class="id">7</td><td>测试设计可接着做，做到哪一步（<a href="#c23">2.3</a>）</td><td>只做会话结果的复用。包一和 3.1 做完之后这一步只有一个多小时，2.1 又堵住了这次的起因，试跑结果的复用可以先不做</td><td>两步都做；或者都不做，接受这一步被打断要重来</td></tr>
+        <tr><td class="id">1</td><td>性能范围只取项目自己声明的：README 和文档里报告过的性能，加上仓库自带的基准脚本</td><td><a href="#c11">1.1</a>、<a href="#c12">1.2</a></td></tr>
+        <tr><td class="id">2</td><td>基准脚本由 agent 自动找，不假设固定的文件名或路径</td><td><a href="#c11">1.1</a></td></tr>
+        <tr><td class="id">3</td><td>调度器上有 GPU 就可以测，每个基准只用 1 块，不照项目声明的块数；1 块测不了就不测，在报告里说明</td><td><a href="#c13">1.3</a>、<a href="#c14">1.4</a></td></tr>
+        <tr><td class="id">4</td><td>不加“用行为检查的耗时做粗筛”的兜底；不做“用端到端负载代替逐叶子基准”和“按耗时占比选叶子”这两个另外的办法</td><td>没有进方案</td></tr>
+        <tr><td class="id">5</td><td>项目没有任何性能声明时，不做性能验收，结果写“项目没有声明性能”</td><td><a href="#c14">1.4</a></td></tr>
+        <tr><td class="id">6</td><td>逐个模型列速度的表格（比如 detectron2 的 Model Zoo）不逐行算作声明。只取 README 和文档的主张，以及自带脚本覆盖的任务；detectron2 是 5 个基准</td><td><a href="#c11">1.1</a></td></tr>
+        <tr><td class="id">7</td><td>一个作业最多 20 个计时基准，设置里可改</td><td><a href="#c12">1.2</a></td></tr>
+        <tr><td class="id">8</td><td>现在的“每个叶子都测”留成一个要显式打开的选项，默认不用</td><td><a href="#c12">1.2</a></td></tr>
+        <tr><td class="id">9</td><td>输出随路径变化的检查：基线报问题、发事件，对比时判“未验证”；不改摘要的算法</td><td><a href="#c22">2.2</a></td></tr>
+        <tr><td class="id">10</td><td>重新准备环境按原提交的做法触发：配方的产物不在了才重跑。<code>fix-parallel-main</code> 上另外两个没进 main 的提交也一起看</td><td><a href="#c32">3.2</a>、<a href="#unmerged">另外两个提交</a></td></tr>
+        <tr><td class="id">11</td><td>测试设计被打断后只复用会话结果，试跑结果不复用</td><td><a href="#c23">2.3</a></td></tr>
       </tbody>
     </table>
   </div>
+  <h3>看过另外两个提交之后的建议，等你确认</h3>
+  <ul class="plain">
+    <li><b><code>c20cfa67</code>（封存之前的基线不可用时当场说）：带回，并入 2.2。</b>它很小，问题在最新 main 上还在，和 2.2 正好配套。我另外建议让它的事件点名问题的种类，不只给一个数。</li>
+    <li><b><code>b19c77a1</code>（由主作业的 agent 决定导入是否等草稿作业的修复）：值得带回，但以后单独做。</b>它有 459 行，在最新 main 上要重新移植；这次运行里没有它要解决的等待。方案做完之后这种等待会重新出现，所以建议先在改完后的重跑里量一下，再决定。</li>
+  </ul>
 </section>
 
 
@@ -1029,12 +1081,13 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-sp
     <li><b>两次运行各只有一遍，清单不同。</b>“共有的工作”变长主要来自清单变大，这一页没有把它算作性能验收的代价。</li>
     <li><b>“预期”都是推算。</b>没有改代码，除了上面说的单次耗时之外没有做任何实验。其中最不确定的是 3.1 的加速倍数。</li>
     <li><b>最新 main 和这次运行用的提交之间差一个 PR #57。</b>这一页涉及的文件里，<code>check_executor.py</code>、<code>check_worker.py</code>、<code>verification.py</code>、<code>performance.py</code>、<code>benchmark_runner.py</code>、<code>leaf_test_validity.py</code>、<code>rewrite.py</code>、<code>pair.py</code>、<code>job_tools/authoring.py</code>、<code>strategies/advice.py</code> 没有改动。<code>execution.py</code>、<code>leaf_test_design.py</code>、<code>job_tools/freeze.py</code> 有改动（新增范围基线和范围试跑），和这里的九个问题无关，但会让冻结阶段更长。这部分只读了代码，没有跑过。</li>
+    <li><b>三个没进 main 的提交能不能直接应用</b>，是逐个文件试出来的（只做检查，没有真的应用）。它们各自解决的问题在最新 main 上还在不在，是读代码确认的。提交说明里提到的那次早先的 detectron2 运行，我只有说明里的数字。</li>
     <li><b>行号。</b>都是 main @ cd7fd735 的；代码再动之后以函数名为准。</li>
   </ul>
 </section>
 
 <footer>
-  <p>nanolize 性能验收修改方案 · 第二版 · 依据 detectron2 core 的一次完整运行（main @ a003430d）和 main @ cd7fd735 的代码 · 2026-11-23 · 只有方案，没有改代码</p>
+  <p>nanolize 性能验收修改方案 · 第三版 · 依据 detectron2 core 的一次完整运行（main @ a003430d）和 main @ cd7fd735 的代码 · 2026-11-23 · 只有方案，没有改代码</p>
   <p>这一页没有写本机的路径、账户、队列、节点名和调度器作业编号。</p>
 </footer>
 
